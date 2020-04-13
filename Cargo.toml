@@ -1,0 +1,16 @@
+[package]
+name = "rgit"
+version = "0.1.0"
+authors = ["lf- <lf-@users.noreply.github.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+flate2 = "1.0.14"
+anyhow = "1.0.28"
+clap = { git = "https://github.com/clap-rs/clap/" }
+chrono = "0.4.11"
+sha-1 = "0.8.2"
+petgraph = "0.5.0"
+
