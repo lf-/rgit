@@ -148,7 +148,7 @@ impl Repo {
 #[test]
 fn test_path_for_object() {
     let repo = Repo {
-        root: "/path/to/root".into(),
+        root: "/path/to/root/.git".into(),
     };
     assert_eq!(
         repo.path_for_object(&Id::from("0096cfbd9d1001af3731d9ab5de79450fe031719").unwrap()),
@@ -159,17 +159,25 @@ fn test_path_for_object() {
 impl NameEntry {
     pub fn from(s: &str) -> Option<NameEntry> {
         // format: NAME <EMAIL> 12345 -0900
-        let mut iter = s.rsplitn(4, " ");
+        let mut iter = s.rsplitn(3, ' ');
         let offs = iter.next()?;
         let timestamp = iter.next()?;
 
         let time =
             DateTime::<FixedOffset>::parse_from_str(&(timestamp.to_owned() + " " + offs), "%s %z")
                 .ok()?;
+
+        Self::with_time(iter.next()?, time)
+    }
+
+    pub fn with_time(s: &str, time: DateTime<FixedOffset>) -> Option<NameEntry> {
+        let mut iter = s.rsplitn(2, ' ');
+
         let email_part = iter.next()?;
         // chop off brackets
         let email = &email_part[1..email_part.len() - 1];
         let name = iter.next()?;
+
         Some(NameEntry {
             name: name.to_owned(),
             email: email.to_owned(),

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, FixedOffset, Local};
 use std::ascii;
 use std::collections::BTreeMap;
 use std::env;
@@ -37,7 +38,10 @@ pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()
         _ => return Err(anyhow!("given ID is not a tree"))?,
     }
 
-    let who = NameEntry::from(&who).context("invalid `who`")?;
+    let time = Local::now();
+    let offs = time.offset();
+    let time = DateTime::<FixedOffset>::from_utc(time.naive_utc(), offs.clone());
+    let who = NameEntry::with_time(&who, time).context("invalid `who`")?;
 
     let mut parents = Vec::new();
     if let Some(head) = repo.head()? {
@@ -98,8 +102,6 @@ impl TreeEntry {
     /// saves a *flattened* tree to disk
     /// it will panic if the tree is not flat.
     fn save(&self, repo: &Repo) -> Result<Id> {
-        // TODO: sort before saving!
-
         let st = self
             .subtree()
             .expect("can only save things that are not already on disk");
@@ -187,7 +189,6 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
                 // this subtree has more subtrees in it, deal with it later
                 for (_, elem) in entry.subtree_mut().unwrap() {
                     if elem.subtree().is_some() {
-                        println!("defer {:?}", elem);
                         remaining.push(elem);
                     }
                 }
