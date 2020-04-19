@@ -158,7 +158,7 @@ impl Repo {
 
     /// Stores a git object to disk and gives you its ID.
     pub fn store(&self, obj: &dyn GitObject) -> Result<Id> {
-        let (id, content) = self.prepare_store(obj);
+        let (id, content) = Object::prepare_store(obj);
 
         if self.has_id(&id) {
             // don't store IDs that already exist
@@ -174,34 +174,6 @@ impl Repo {
 
         fs::write(&path, content)?;
         Ok(id)
-    }
-
-    fn prepare_store(&self, obj: &dyn GitObject) -> (Id, Vec<u8>) {
-        let typ = obj.tag();
-        let encoded = obj.encode();
-
-        let size = encoded.len();
-        let mut to_store = Vec::new();
-        to_store.extend(typ);
-        to_store.push(b' ');
-        to_store.extend(format!("{}", size).as_bytes());
-        to_store.push(0x00);
-        to_store.extend(encoded);
-
-        let mut hasher = Sha1::new();
-        hasher.input(&to_store);
-        let id = Id(hasher.result().into());
-
-        let mut squished = Vec::new();
-        let mut squisher = ZlibEncoder::new(&mut squished, Compression::best());
-        squisher
-            .write_all(&to_store[..])
-            .expect("writing to in-memory compression stream failed. wat.");
-        squisher
-            .finish()
-            .expect("compression finalization failed. wat");
-
-        (id, squished)
     }
 
     /// Opens an existing object on disk and parses it into an Object
@@ -593,6 +565,34 @@ impl Object {
             _ => return Err(anyhow!("unsupported object type {}", objtype)),
         })
     }
+
+    fn prepare_store(obj: &dyn GitObject) -> (Id, Vec<u8>) {
+        let typ = obj.tag();
+        let encoded = obj.encode();
+
+        let size = encoded.len();
+        let mut to_store = Vec::new();
+        to_store.extend(typ);
+        to_store.push(b' ');
+        to_store.extend(format!("{}", size).as_bytes());
+        to_store.push(0x00);
+        to_store.extend(encoded);
+
+        let mut hasher = Sha1::new();
+        hasher.input(&to_store);
+        let id = Id(hasher.result().into());
+
+        let mut squished = Vec::new();
+        let mut squisher = ZlibEncoder::new(&mut squished, Compression::best());
+        squisher
+            .write_all(&to_store[..])
+            .expect("writing to in-memory compression stream failed. wat.");
+        squisher
+            .finish()
+            .expect("compression finalization failed. wat");
+
+        (id, squished)
+    }
 }
 
 #[test]
@@ -608,10 +608,7 @@ fn test_object_encoding() {
         committer: NameEntry::from("lf- <lf-@users.noreply.github.com> 1586391037 -0700").unwrap(),
         message: "Merge branch \'branch2\'\n".to_string(),
     };
-    let fakerepo = Repo {
-        root: PathBuf::new(),
-    };
-    let (id, squished_content) = fakerepo.prepare_store(&decoded);
+    let (id, squished_content) = Object::prepare_store(&decoded);
 
     let mut unsquisher = flate2::read::ZlibDecoder::new(&squished_content[..]);
 
