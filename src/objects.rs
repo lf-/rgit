@@ -20,11 +20,12 @@ fn open_compressed(path: &Path) -> Result<impl Read> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Id([u8; 20]);
 
 pub struct Repo {
     /// path to the root of the .git directory
-    root: PathBuf,
+    pub root: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +76,7 @@ impl Repo {
         for dir in cwd.as_path().ancestors() {
             let dotgit = dir.join(".git");
             if dotgit.is_dir() {
+                trace!("found git repo {:?}", &dotgit);
                 return Some(Repo { root: dotgit });
             }
         }
@@ -108,6 +110,7 @@ impl Repo {
         path
     }
 
+    /// Opens an object of given ID for reading
     pub fn open_object(&self, id: &Id) -> Result<impl Read> {
         open_compressed(&self.path_for_object(id))
     }

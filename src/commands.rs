@@ -3,12 +3,15 @@ use chrono::{DateTime, FixedOffset, Local};
 use std::ascii;
 use std::collections::BTreeMap;
 use std::env;
+use std::fs::OpenOptions;
 use std::io;
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::mem;
 use std::path::Path;
 
+use crate::args;
 use crate::args::OutputType;
+use crate::index;
 use crate::objects;
 use crate::objects::{Blob, Commit, File, Id, NameEntry, Object, Repo, Tree};
 
@@ -125,6 +128,8 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find .git")?;
     let paths = paths.iter().map(|p| Path::new(p)).collect::<Vec<&Path>>();
     for &path in &paths {
+        // TODO: support handling directories. probably requires thought re:
+        // symlinks
         if !path.is_file() {
             return Err(anyhow!(
                 "one or more of the given paths does not exist or is not a file"
@@ -224,6 +229,23 @@ pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
         }
         OutputType::Debug => {
             print!("{:#?}", objects::Object::open(&repo, &id)?);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn debug(what: args::DebugType) -> Result<()> {
+    let repo = Repo::new().context("failed to find repo")?;
+
+    match what {
+        args::DebugType::Index => {
+            let indexfile = repo.root.join("index");
+
+            let h = OpenOptions::new()
+                .read(true)
+                .open(indexfile)
+                .context("failed opening index file")?;
+            println!("{:#x?}", index::parse(BufReader::new(h))?);
         }
     }
     Ok(())

@@ -3,6 +3,10 @@ use clap::{arg_enum, Clap};
 #[derive(Clap)]
 #[clap(version = "0.0.1", author = "lf")]
 pub(crate) struct Opts {
+    /// How verbose to be when printing output
+    #[clap(short = "v", parse(from_occurrences))]
+    pub(crate) verbose: usize,
+
     #[clap(subcommand)]
     pub(crate) subcmd: SubCommand,
 }
@@ -12,14 +16,17 @@ pub(crate) enum SubCommand {
     /// 🐱 dumps the content of an object file with a given ID
     CatFile(CatFile),
 
-    /// 🌳 makes a tree object from the given directory
-    NewTree(NewTree),
-
     /// 🔃🌳 commits a tree object
     CommitTree(CommitTree),
 
+    /// 🐛 dumps debug info about various files
+    Debug(Debug),
+
     /// ✨ makes a new repo
     Init,
+
+    /// 🌳 makes a tree object from the given file paths
+    NewTree(NewTree),
 }
 
 // :( this should be pub(crate) but the macro eats it
@@ -61,4 +68,18 @@ pub(crate) struct CommitTree {
     #[clap(long, case_insensitive = true)]
     /// Commit message
     pub(crate) message: String,
+}
+
+#[derive(Clap)]
+pub(crate) struct Debug {
+    #[clap(index = 1, case_insensitive = true,
+        possible_values = &DebugType::variants())]
+    /// Which file to debug
+    pub(crate) what: DebugType,
+}
+
+arg_enum! {
+pub enum DebugType {
+    Index
+}
 }
