@@ -12,7 +12,6 @@ use std::path::Path;
 use crate::args;
 use crate::args::OutputType;
 use crate::index;
-use crate::objects;
 use crate::objects::{Blob, Commit, File, Id, NameEntry, Object, Repo, Tree};
 
 pub(crate) fn init() -> Result<()> {
@@ -97,32 +96,47 @@ impl TreeEntry {
         match self {
             TreeEntry::Blob(id) => (id, 0o100644),
             TreeEntry::Tree(id) => (id, 0o040000),
-            _ => unreachable!("asked for permissions on an unflattened tree"),
+            _ => unreachable!("asked for permissions on an unflattened tree {:?}", self),
         }
-    }
-
-    /// saves a *flattened* tree to disk
-    /// it will panic if the tree is not flat.
-    fn save(&self, repo: &Repo) -> Result<Id> {
-        let st = self
-            .subtree()
-            .expect("can only save things that are not already on disk");
-
-        let files = st.iter().map(|(name, e)| {
-            let (id, mode) = e.perms();
-            File {
-                id: id.clone(),
-                mode,
-                name: name.clone(),
-            }
-        });
-        let tree = Tree {
-            files: files.collect(),
-        };
-        repo.store(&tree)
     }
 }
 
+/// Saves a *flattened* tree to disk
+/// Warning: it will panic if the tree is not flat!
+fn save_subtree_to_disk(st: &SubTree, repo: &Repo) -> Result<Id> {
+    let files = st.iter().map(|(name, e)| {
+        let (id, mode) = e.perms();
+        File {
+            id: id.clone(),
+            mode,
+            name: name.clone(),
+        }
+    });
+    let tree = Tree {
+        files: files.collect(),
+    };
+    repo.store(&tree)
+}
+
+/// Saves an unflattened subtree to disk
+fn save_subtree(subtree: &mut TreeEntry, repo: &Repo) -> Result<Id> {
+    for (_, st) in subtree.subtree_mut().unwrap() {
+        match st {
+            TreeEntry::SubTree(_) => {
+                let saved = TreeEntry::Tree(save_subtree(st, repo)?);
+                mem::replace(st, saved);
+            }
+            TreeEntry::Blob(_) | TreeEntry::Tree(_) => {
+                // we don't need to save these
+            }
+        }
+    }
+    // if we've escaped this loop, there are no more subtrees in our subtree. We
+    // may save it now
+    save_subtree_to_disk(subtree.subtree().unwrap(), repo)
+}
+
+/// Create a new tree object, ready to commit.
 pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find .git")?;
     let paths = paths.iter().map(|p| Path::new(p)).collect::<Vec<&Path>>();
@@ -130,9 +144,7 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
         // TODO: support handling directories. probably requires thought re:
         // symlinks
         if !path.is_file() {
-            return Err(anyhow!(
-                "one or more of the given paths does not exist or is not a file"
-            ));
+            return Err(anyhow!("{} is not a file", &path.display()));
         }
     }
 
@@ -177,32 +189,8 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
             .insert(filename.to_owned(), TreeEntry::Blob(blob));
     }
 
-    // bake the tree. Depth first search time!
-    let mut remaining = Vec::new();
-    remaining.push(&mut tree);
-    while remaining.len() > 0 {
-        let entry = remaining.pop().unwrap();
-
-        let entry = entry;
-        if let TreeEntry::SubTree(st) = entry {
-            let seen_st = st.iter().any(|(_, elem)| elem.subtree().is_some());
-
-            if seen_st {
-                // this subtree has more subtrees in it, deal with it later
-                for (_, elem) in entry.subtree_mut().unwrap() {
-                    if elem.subtree().is_some() {
-                        remaining.push(elem);
-                    }
-                }
-            } else {
-                // we are at full depth, emit a Tree for this subtree
-                let tree = entry.save(&repo)?;
-
-                mem::replace(entry, TreeEntry::Tree(tree));
-            }
-        }
-    }
-    println!("Made tree {}", tree.save(&repo)?);
+    let id = save_subtree(&mut tree, &repo)?;
+    println!("tree {}", id);
 
     Ok(())
 }

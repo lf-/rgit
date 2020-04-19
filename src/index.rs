@@ -1,7 +1,8 @@
-use crate::objects::Id;
+use crate::objects::{Blob, Id, Repo};
 use crate::util::ByteString;
 use anyhow::{Error, Result};
 use safecast::Safecast;
+use sha1::{Digest, Sha1};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -9,6 +10,9 @@ use std::mem;
 use std::path::Path;
 use std::time;
 use thiserror::Error;
+
+const SIGNATURE: [u8; 4] = *b"DIRC";
+const VERSION: u32 = 2;
 
 #[derive(Error, Debug)]
 pub enum IndexError {
@@ -97,7 +101,7 @@ struct Header {
     num_entries: u32be,
 }
 
-#[derive(Safecast, Clone, Debug)]
+#[derive(Safecast, Clone, PartialEq, Debug)]
 #[repr(C)]
 /// order: sorted in ascending order on name field, sorted in byte comparison order
 pub struct IndexEntry {
@@ -141,6 +145,184 @@ pub struct IndexEntry {
 /// Files indexed in this index. Must be kept sorted.
 type Index = Vec<(ByteString, IndexEntry)>;
 
+#[derive(Debug, PartialEq)]
+pub struct StatInfo {
+    pub ctime: (u32, u32),
+    pub mtime: (u32, u32),
+    pub size: u32,
+    pub unix_stat: UnixStat,
+}
+
+#[derive(Debug, Default)]
+pub struct UnixStat {
+    pub dev: u32,
+    pub ino: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub executable: bool,
+}
+
+impl UnixStat {
+    /// Gets the unix-specific stat stuff. Not implemented on Unix yet but zero
+    /// is an acceptable value
+    fn get(meta: &fs::Metadata) -> UnixStat {
+        Default::default()
+    }
+
+    fn mode(&self) -> u32 {
+        if self.executable {
+            0o100755
+        } else {
+            0o100644
+        }
+    }
+}
+
+impl StatInfo {
+    fn get(path: &Path) -> Result<StatInfo> {
+        // XXX: these u32 timestamps will break after 2038 but git will break too 🤷‍♀️
+        let meta = fs::metadata(path)?;
+
+        let mtime = system_time_to_epoch(meta.modified()?)?;
+        let ctime = system_time_to_epoch(meta.modified()?)?;
+
+        let size = meta.len() as u32;
+
+        let unix_stat = UnixStat::get(&meta);
+        Ok(StatInfo {
+            mtime,
+            ctime,
+            size,
+            unix_stat,
+        })
+    }
+}
+
+impl PartialEq for UnixStat {
+    /// Compares a UnixStat, ignoring fields if they are zero
+    fn eq(&self, other: &UnixStat) -> bool {
+        (self.dev == 0 || self.dev == other.dev)
+            && (self.gid == 0 || self.gid == other.gid)
+            && (self.uid == 0 || self.uid == other.uid)
+            && (self.ino == 0 || self.ino == other.ino)
+            && (self.dev == 0 || self.dev == other.dev)
+            && (cfg!(target_family = "unix") && self.executable == other.executable)
+    }
+}
+
+impl IndexEntry {
+    pub fn new_from_file(name: &ByteString, repo: &Repo) -> Result<IndexEntry> {
+        // XXX: prevents us from supporting non-UTF-8 file names
+        let filename = std::str::from_utf8(&name.0)?;
+
+        let path = repo.root.join(filename);
+        let id = repo.store(&Blob::new_from_disk(&path)?)?;
+        let statinfo = StatInfo::get(&path)?;
+
+        // bottom 12 bits of the name length are flags
+        let flags = (name.len() & 0xfff) as u16;
+
+        Ok(IndexEntry {
+            ctime: statinfo.ctime.0.into(),
+            ctime_ns: statinfo.ctime.1.into(),
+            mtime: statinfo.mtime.0.into(),
+            mtime_ns: statinfo.mtime.1.into(),
+
+            size: statinfo.size.into(),
+            id,
+            flags: flags.into(),
+
+            mode: statinfo.unix_stat.mode().into(),
+            dev: statinfo.unix_stat.dev.into(),
+            ino: statinfo.unix_stat.ino.into(),
+            uid: statinfo.unix_stat.uid.into(),
+            gid: statinfo.unix_stat.gid.into(),
+        })
+    }
+
+    pub fn statinfo(&self) -> StatInfo {
+        StatInfo {
+            ctime: (self.ctime.into(), self.ctime_ns.into()),
+            mtime: (self.mtime.into(), self.mtime_ns.into()),
+            size: self.size.into(),
+            unix_stat: UnixStat {
+                dev: self.dev.into(),
+                ino: self.ino.into(),
+                uid: self.uid.into(),
+                gid: self.gid.into(),
+                executable: (u32::from(self.mode) & ((1 << 9) - 1)) == 0o755,
+            },
+        }
+    }
+}
+
+/// Ensure a file is in an index. `name` is a repo-relative path.
+pub fn add_to_index(index: &mut Index, filename: &ByteString, repo: &Repo) -> Result<()> {
+    let existing_entry = index.binary_search_by(|(name, _)| name.cmp(filename));
+
+    let path = repo.root.join(std::str::from_utf8(&filename.0)?);
+    let filestats = StatInfo::get(&path)?;
+
+    match existing_entry {
+        // If it's in the index and all the stats are the same, we can assume
+        // it's the same and no-op
+        Ok(found) if index[found].1.statinfo() == filestats => (),
+
+        // It's in the index but the entry is old. Replace the entry.
+        Ok(found) => {
+            let new_entry = IndexEntry::new_from_file(filename, repo)?;
+            index[found].1 = new_entry;
+        }
+
+        // Not in the index
+        Err(idx) => {
+            let new_entry = IndexEntry::new_from_file(filename, repo)?;
+            index.insert(idx, (filename.clone(), new_entry));
+        }
+    };
+    Ok(())
+}
+
+pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
+    let mut hash = Sha1::new();
+    let header = Header {
+        signature: SIGNATURE,
+        version: VERSION.into(),
+        num_entries: (index.len() as u32).into(),
+    };
+    let header_buf = header.cast();
+    file.write_all(header_buf)?;
+    hash.input(header_buf);
+
+    for (name, entry) in index {
+        let entry_buf = entry.cast();
+        file.write_all(entry_buf)?;
+        hash.input(entry_buf);
+
+        // Make a name record with the correct null padding
+        let namerecsz = name_record_size(name.len());
+        let mut namerec = name.clone();
+        namerec.resize(namerecsz, 0x00);
+
+        file.write_all(&namerec)?;
+        hash.input(&namerec.0);
+    }
+
+    // write a hash of the contents at the end of the file
+    let res: [u8; 20] = hash.result().into();
+    file.write_all(&res)?;
+    Ok(())
+}
+
+/// Finds the number of bytes that the name record in the index will occupy (with padding)
+fn name_record_size(name_length: usize) -> usize {
+    // pad record incl name + nul byte to 8 byte boundary
+    let full_record_sz = mem::size_of::<IndexEntry>() + name_length;
+    let full_record_sz = full_record_sz + (8 - full_record_sz % 8);
+    full_record_sz - mem::size_of::<IndexEntry>()
+}
+
+/// Reads an index out of a file
 pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
     let mut buf = [0u8; mem::size_of::<Header>()];
     file.read_exact(&mut buf)?;
@@ -150,7 +332,7 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
 
     trace!("index header {:?}", &header);
 
-    if &header.signature != b"DIRC" {
+    if header.signature != SIGNATURE {
         return Err(Error::new(IndexError::BadMagic));
     }
 
@@ -172,16 +354,13 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
 
         // bottom 12 bits of flags is name size
         let flags: u16 = entry.flags.into();
-        let sz = (flags & 0xfff) as usize;
-        if sz == 0xfff {
+        let name_length = (flags & 0xfff) as usize;
+        if name_length == 0xfff {
             // must be measured manually. implementation not today
             unimplemented!("name is >0xfff characters long. unsupported");
         }
 
-        // pad record incl name + nul byte to 8 byte boundary
-        let full_record_sz = mem::size_of::<IndexEntry>() + sz;
-        let full_record_sz = full_record_sz + (8 - full_record_sz % 8);
-        let record_sz = full_record_sz - mem::size_of::<IndexEntry>();
+        let record_sz = name_record_size(name_length);
 
         // we deliberately choose to keep the vector at the size of the longest name
         if name.capacity() < record_sz {
@@ -189,7 +368,7 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
         }
 
         file.read_exact(&mut name[..record_sz])?;
-        files.push((ByteString(Vec::from(&name[..sz])), entry.clone()))
+        files.push((ByteString(Vec::from(&name[..name_length])), entry.clone()))
     }
 
     Ok(files)
@@ -197,46 +376,108 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
 
 /// Converts a SystemTime object to a (secs, nsecs) tuple of time since the Unix
 /// epoch
-fn system_time_to_epoch(systime: time::SystemTime) -> Result<(u64, u32)> {
+fn system_time_to_epoch(systime: time::SystemTime) -> Result<(u32, u32)> {
     let dur = systime.duration_since(time::UNIX_EPOCH)?;
-    Ok((dur.as_secs(), dur.subsec_nanos()))
+    Ok((dur.as_secs() as u32, dur.subsec_nanos()))
 }
 
-/// Checks the OS-specific stuff in the index entry to be equal
-/// On Windows, we ignore:
-/// - file mode (consider to be equal)
-/// - dev, ino
-/// - uid, gid
-#[cfg(target_family = "windows")]
-fn is_same_os(_meta: &fs::Metadata, _entry: &IndexEntry) -> Result<bool> {
-    Ok(true)
-}
+#[cfg(test)]
+mod tests {
+    const TEST_INDEX: &[u8] = include_bytes!("testdata/test_index");
+    const TEST_INDEX_TREE: &[u8] = include_bytes!("testdata/test_index_tree");
 
-#[cfg(target_family = "unix")]
-fn is_same_os(meta: &fs::Metadata, entry: &IndexEntry) -> Result<bool> {
-    todo!("Sorry, we've not implemented extended metadata checking for Linux yet")
-}
+    #[test]
+    fn test_index() {
+        let index = vec![
+            (
+                super::ByteString((*b"item1").into()),
+                super::IndexEntry {
+                    ctime: 0x5e9bf1c6.into(),
+                    ctime_ns: 0x26545c10.into(),
+                    mtime: 0x5e9bf1ce.into(),
+                    mtime_ns: 0x30640b74.into(),
+                    dev: 0x0.into(),
+                    ino: 0x0.into(),
+                    mode: 0x81a4.into(),
+                    uid: 0x0.into(),
+                    gid: 0x0.into(),
+                    size: 0x8.into(),
+                    id: super::Id::from("07d4aba2654d6d44c24862467d86ee8eb67840fe").unwrap(),
+                    flags: 0x5.into(),
+                },
+            ),
+            (
+                super::ByteString((*b"item2").into()),
+                super::IndexEntry {
+                    ctime: 0x5e9bf1c9.into(),
+                    ctime_ns: 0xb204508.into(),
+                    mtime: 0x5e9bf1d2.into(),
+                    mtime_ns: 0x2ce99284.into(),
+                    dev: 0x0.into(),
+                    ino: 0x0.into(),
+                    mode: 0x81a4.into(),
+                    uid: 0x0.into(),
+                    gid: 0x0.into(),
+                    size: 0xc.into(),
+                    id: super::Id::from("0bfeb48f6e414e435fe4fbf1d85d5a3a83dd4251").unwrap(),
+                    flags: 0x5.into(),
+                },
+            ),
+        ];
 
-/// Checks metadata to find if a file is highly likely to be the same as the one
-/// in the index without having to read and hash it
-pub(crate) fn get_id(file: &Path, entry: &IndexEntry) -> Result<bool> {
-    // XXX: these u32 timestamps will panic after 2038 but git will break too 🤷‍♀️
-    let meta = fs::metadata(file)?;
+        let mut idx_buf = Vec::new();
 
-    let modtime = system_time_to_epoch(meta.modified()?)?;
-    if u32::from(entry.mtime) != modtime.0 as u32 || u32::from(entry.mtime_ns) != modtime.1 {
-        return Ok(false);
+        super::write_to_file(&index, &mut idx_buf).unwrap();
+
+        assert_eq!(idx_buf, TEST_INDEX);
+
+        let parsed = super::parse(TEST_INDEX).unwrap();
+        assert_eq!(index, parsed);
     }
 
-    let createtime = system_time_to_epoch(meta.created()?)?;
-    if u32::from(entry.ctime) != createtime.0 as u32 || u32::from(entry.ctime_ns) != createtime.1 {
-        return Ok(false);
-    }
+    #[test]
+    #[ignore = "not yet implemented; need to add TREE extension first"]
+    fn test_index_tree() {
+        let index = vec![
+            (
+                super::ByteString((*b"dir/item").into()),
+                super::IndexEntry {
+                    ctime: 0x5e9bc19e.into(),
+                    ctime_ns: 0x217b3358.into(),
+                    mtime: 0x5e9bc19e.into(),
+                    mtime_ns: 0x218a78b8.into(),
+                    dev: 0x0.into(),
+                    ino: 0x0.into(),
+                    mode: 0x81a4.into(),
+                    uid: 0x0.into(),
+                    gid: 0x0.into(),
+                    size: 0x14.into(),
+                    id: super::Id::from("c2801012ebf8905049b7555a8e1a32fb2df68a8f").unwrap(),
+                    flags: 0x8.into(),
+                },
+            ),
+            (
+                super::ByteString((*b"file2").into()),
+                super::IndexEntry {
+                    ctime: 0x5e9bbee2.into(),
+                    ctime_ns: 0x1b0f3be0.into(),
+                    mtime: 0x5e9bbee2.into(),
+                    mtime_ns: 0x1b1e8398.into(),
+                    dev: 0x0.into(),
+                    ino: 0x0.into(),
+                    mode: 0x81a4.into(),
+                    uid: 0x0.into(),
+                    gid: 0x0.into(),
+                    size: 0xc.into(),
+                    id: super::Id::from("107f41d5f9e9ea48ff6a312917c9bb029cf9d2b6").unwrap(),
+                    flags: 0x5.into(),
+                },
+            ),
+        ];
 
-    let size = meta.len();
-    if u32::from(entry.size) as u64 != size {
-        return Ok(false);
-    }
+        let mut idx_buf = Vec::new();
 
-    is_same_os(&meta, entry)
+        super::write_to_file(&index, &mut idx_buf).unwrap();
+        assert_eq!(idx_buf, TEST_INDEX_TREE);
+    }
 }

@@ -110,7 +110,7 @@ impl Repo {
         Ok(Repo { root: root.into() })
     }
 
-    fn path_for_object(&self, id: &Id) -> PathBuf {
+    pub fn path_for_object(&self, id: &Id) -> PathBuf {
         let id = format!("{}", id);
         let mut path = self.root.clone();
         path.push("objects");

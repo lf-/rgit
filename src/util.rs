@@ -2,6 +2,7 @@ use std::ascii;
 use std::fmt;
 
 /// A byte string wrapped in a type
+#[derive(Clone, PartialEq)]
 pub struct ByteString(pub Vec<u8>);
 
 impl fmt::Display for ByteString {
@@ -20,6 +21,12 @@ impl std::ops::Deref for ByteString {
     type Target = Vec<u8>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl std::ops::DerefMut for ByteString {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
