@@ -19,6 +19,15 @@ fn open_compressed(path: &Path) -> Result<impl Read> {
     Ok(decoder)
 }
 
+pub trait GitObject {
+    /// Encodes an object for storage.
+    fn encode(&self) -> Vec<u8>;
+
+    /// Returns the tag for this object on-disk. For example, b"blob" for Blob
+    /// objects.
+    fn tag(&self) -> Vec<u8>;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Id([u8; 20]);
@@ -146,6 +155,71 @@ impl Repo {
             .expect("your .git is at the root of your fs?")
             .to_path_buf()
     }
+
+    /// Stores a git object to disk and gives you its ID.
+    pub fn store(&self, obj: &dyn GitObject) -> Result<Id> {
+        let (id, content) = self.prepare_store(obj);
+
+        if self.has_id(&id) {
+            // don't store IDs that already exist
+            return Ok(id);
+        }
+
+        let path = self.path_for_object(&id);
+        fs::create_dir_all(
+            path.as_path()
+                .parent()
+                .context("unexpected filesystem boundary found in your .git directory")?,
+        )?;
+
+        fs::write(&path, content)?;
+        Ok(id)
+    }
+
+    fn prepare_store(&self, obj: &dyn GitObject) -> (Id, Vec<u8>) {
+        let typ = obj.tag();
+        let encoded = obj.encode();
+
+        let size = encoded.len();
+        let mut to_store = Vec::new();
+        to_store.extend(typ);
+        to_store.push(b' ');
+        to_store.extend(format!("{}", size).as_bytes());
+        to_store.push(0x00);
+        to_store.extend(encoded);
+
+        let mut hasher = Sha1::new();
+        hasher.input(&to_store);
+        let id = Id(hasher.result().into());
+
+        let mut squished = Vec::new();
+        let mut squisher = ZlibEncoder::new(&mut squished, Compression::best());
+        squisher
+            .write_all(&to_store[..])
+            .expect("writing to in-memory compression stream failed. wat.");
+        squisher
+            .finish()
+            .expect("compression finalization failed. wat");
+
+        (id, squished)
+    }
+
+    /// Opens an existing object on disk and parses it into an Object
+    /// structure
+    pub fn open(&self, id: &Id) -> Result<Object> {
+        let mut stream = self
+            .open_object(&id)
+            .context(format!("Failed to open object {} on disk", id))?;
+
+        let mut buf = Default::default();
+
+        stream.read_to_end(&mut buf).context(format!(
+            "Failed reading decompressed stream from object {}",
+            id
+        ))?;
+        // question mark operator *inside* an Ok is possibly evil
+        Ok(Object::parse(buf).context(format!("Failed to parse object {}", id))?)
+    }
 }
 
 #[test]
@@ -264,22 +338,30 @@ fn test_id_as_hex() {
 }
 
 impl Blob {
-    pub fn from(content: &[u8]) -> Blob {
+    pub fn load(content: &[u8]) -> Result<Box<Blob>> {
         // it is probably a bad idea to copy the full file content into memory
         // for no reason
-        Blob {
+        Ok(Box::new(Blob {
             content: content.to_vec(),
-        }
+        }))
+    }
+}
+
+impl GitObject for Blob {
+    fn encode(&self) -> Vec<u8> {
+        self.content.clone()
     }
 
+    fn tag(&self) -> Vec<u8> {
+        Vec::from(*b"blob")
+    }
+}
+
+impl Blob {
     pub fn new_from_disk(path: &Path) -> Result<Blob> {
         Ok(Blob {
             content: fs::read(path)?,
         })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        self.content.clone()
     }
 }
 
@@ -306,7 +388,8 @@ fn test_file_encoding() {
 }
 
 impl Tree {
-    fn from(content: &[u8]) -> Result<Tree> {
+    /// Loads a Tree from disk
+    fn load(content: &[u8]) -> Result<Box<Tree>> {
         // each record is:
         // <octal mode> <name>\x00<20 byte sha1 hash in binary>
         let mut rest = content;
@@ -337,9 +420,11 @@ impl Tree {
             });
             rest = &rest[20..];
         }
-        Ok(Tree { files })
+        Ok(Box::new(Tree { files }))
     }
+}
 
+impl GitObject for Tree {
     fn encode(&self) -> Vec<u8> {
         // there is probably a sin here: we should be using iterators somehow
         let mut v = Vec::new();
@@ -348,16 +433,20 @@ impl Tree {
         }
         v
     }
+
+    fn tag(&self) -> Vec<u8> {
+        Vec::from(*b"tree")
+    }
 }
 
 #[test]
 fn test_tree_parsing() {
-    let tree = Tree::from(
+    let tree = Tree::load(
         b"40000 d\x00??\x1d_tbl?/?}7?Ar??\x1c\x7f?100644 \
         hello.txt\x00?\x016%\x03\x0b???\x06?V?\x7f????FJ",
     );
     assert_eq!(
-        tree.unwrap(),
+        *tree.unwrap(),
         Tree {
             files: vec![
                 File {
@@ -376,7 +465,7 @@ fn test_tree_parsing() {
 }
 
 impl Commit {
-    pub fn from(content: &[u8]) -> Result<Commit> {
+    pub fn load(content: &[u8]) -> Result<Box<Commit>> {
         let content = content.to_vec();
         let mut slice = content.as_slice();
 
@@ -424,15 +513,17 @@ impl Commit {
                 Err(e) => return Err(e).context("read error reading commit metadata"),
             }
         }
-        Ok(Commit {
+        Ok(Box::new(Commit {
             tree: tree.context("tree missing when parsing commit header")?,
             author: author.context("author missing when parsing commit header")?,
             committer: committer.context("committer missing when parsing commit header")?,
             message: str::from_utf8(&slice)?.to_string(),
             parents,
-        })
+        }))
     }
+}
 
+impl GitObject for Commit {
     fn encode(&self) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend(b"tree ");
@@ -448,6 +539,10 @@ impl Commit {
         v.extend(b"\n\n");
         v.extend(self.message.as_bytes());
         v
+    }
+
+    fn tag(&self) -> Vec<u8> {
+        Vec::from(*b"commit")
     }
 }
 
@@ -471,28 +566,11 @@ fn test_commit_parse_encode() {
         committer: NameEntry::from("lf- <lf-@users.noreply.github.com> 1586391037 -0700").unwrap(),
         message: "Merge branch \'branch2\'\n".to_string(),
     };
-    assert_eq!(Commit::from(&commit).unwrap(), decoded);
+    assert_eq!(*Commit::load(&commit).unwrap(), decoded);
     assert_eq!(decoded.encode(), commit);
 }
 
 impl Object {
-    /// Opens an existing object on disk and parses it into an Object
-    /// structure
-    pub fn open(repo: &Repo, id: &Id) -> Result<Object> {
-        let mut stream = repo
-            .open_object(&id)
-            .context(format!("Failed to open object {} on disk", id))?;
-
-        let mut buf = Default::default();
-
-        stream.read_to_end(&mut buf).context(format!(
-            "Failed reading decompressed stream from object {}",
-            id
-        ))?;
-        // question mark operator *inside* an Ok is possibly evil
-        Ok(Self::parse(buf).context(format!("Failed to parse object {}", id))?)
-    }
-
     fn parse(buf: Vec<u8>) -> Result<Object> {
         let mut split = buf.splitn(2, |&e| e == 0x00);
         let header = split.next().context(format!("Malformed object file"))?;
@@ -509,61 +587,11 @@ impl Object {
         )?;
 
         Ok(match objtype {
-            "tree" => Object::Tree(Tree::from(content)?),
-            "blob" => Object::Blob(Blob::from(content)),
-            "commit" => Object::Commit(Commit::from(content)?),
+            "tree" => Object::Tree(*Tree::load(content)?),
+            "blob" => Object::Blob(*Blob::load(content).unwrap()),
+            "commit" => Object::Commit(*Commit::load(content)?),
             _ => return Err(anyhow!("unsupported object type {}", objtype)),
         })
-    }
-
-    pub fn store(&self, repo: &Repo) -> Result<Id> {
-        let (id, content) = self.prepare_store();
-
-        if repo.has_id(&id) {
-            // don't store IDs that already exist
-            return Ok(id);
-        }
-
-        let path = repo.path_for_object(&id);
-        fs::create_dir_all(
-            path.as_path()
-                .parent()
-                .context("unexpected filesystem boundary found in your .git directory")?,
-        )?;
-
-        fs::write(&path, content)?;
-        Ok(id)
-    }
-
-    fn prepare_store(&self) -> (Id, Vec<u8>) {
-        let (typ, encoded) = match self {
-            Object::Tree(t) => ("tree", t.encode()),
-            Object::Blob(b) => ("blob", b.encode()),
-            Object::Commit(c) => ("commit", c.encode()),
-        };
-
-        let size = encoded.len();
-        let mut to_store = Vec::new();
-        to_store.extend(typ.as_bytes());
-        to_store.push(b' ');
-        to_store.extend(format!("{}", size).as_bytes());
-        to_store.push(0x00);
-        to_store.extend(encoded);
-
-        let mut hasher = Sha1::new();
-        hasher.input(&to_store);
-        let id = Id(hasher.result().into());
-
-        let mut squished = Vec::new();
-        let mut squisher = ZlibEncoder::new(&mut squished, Compression::best());
-        squisher
-            .write_all(&to_store[..])
-            .expect("writing to in-memory compression stream failed. wat.");
-        squisher
-            .finish()
-            .expect("compression finalization failed. wat");
-
-        (id, squished)
     }
 }
 
@@ -580,7 +608,10 @@ fn test_object_encoding() {
         committer: NameEntry::from("lf- <lf-@users.noreply.github.com> 1586391037 -0700").unwrap(),
         message: "Merge branch \'branch2\'\n".to_string(),
     };
-    let (id, squished_content) = Object::Commit(decoded).prepare_store();
+    let fakerepo = Repo {
+        root: PathBuf::new(),
+    };
+    let (id, squished_content) = fakerepo.prepare_store(&decoded);
 
     let mut unsquisher = flate2::read::ZlibDecoder::new(&squished_content[..]);
 

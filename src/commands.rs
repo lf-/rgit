@@ -35,7 +35,7 @@ pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()
         return Err(anyhow!("given ID does not exist in the database"));
     }
 
-    let obj = Object::open(&repo, &id)?;
+    let obj = repo.open(&id)?;
     match obj {
         Object::Tree(_) => (),
         _ => return Err(anyhow!("given ID is not a tree"))?,
@@ -59,8 +59,7 @@ pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()
         parents,
     };
 
-    // this is awful. TODO: change this API cuz it's bad
-    let commit_id = Object::Commit(commit_object).store(&repo)?;
+    let commit_id = repo.store(&commit_object)?;
     repo.set_head(&commit_id)?;
     println!("HEAD is now {}", &commit_id);
 
@@ -120,7 +119,7 @@ impl TreeEntry {
         let tree = Tree {
             files: files.collect(),
         };
-        Object::Tree(tree).store(&repo)
+        repo.store(&tree)
     }
 }
 
@@ -148,11 +147,9 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
         let canonical = path.canonicalize()?;
         let repo_relative = canonical.strip_prefix(&tree_root)?;
 
-        let blob = Object::Blob(
-            Blob::new_from_disk(path)
-                .context(anyhow!("failed to read blob {} from disk", &path.display()))?,
-        )
-        .store(&repo)?;
+        let blob = Blob::new_from_disk(path)
+            .context(anyhow!("failed to read blob {} from disk", &path.display()))?;
+        let blob = repo.store(&blob)?;
 
         let mut next_tree = &mut tree;
 
@@ -228,7 +225,7 @@ pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
             io::stdout().write_all(&s)?;
         }
         OutputType::Debug => {
-            print!("{:#?}", objects::Object::open(&repo, &id)?);
+            print!("{:#?}", repo.open(&id)?);
         }
     }
     Ok(())
