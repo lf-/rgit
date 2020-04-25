@@ -208,6 +208,8 @@ impl IndexEntry {
         // bottom 12 bits of the name length are flags
         let flags = (filename.len() & 0xfff) as u16;
 
+        trace!("making index entry for {}", filename);
+
         Ok(IndexEntry {
             ctime: statinfo.ctime.0.into(),
             ctime_ns: statinfo.ctime.1.into(),

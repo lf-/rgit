@@ -6,11 +6,31 @@ mod objects;
 mod tree;
 mod util;
 
+use anyhow::{Context, Result};
 use args::SubCommand;
 use clap::Clap;
 
+use crate::objects::Id;
+
 #[macro_use]
 extern crate log;
+
+/// The actual main function, wrapped to use results.
+fn do_main(opts: args::Opts) -> Result<()> {
+    match opts.subcmd {
+        SubCommand::Add(a) => commands::add(a.files),
+        SubCommand::Commit(c) => commands::commit(c.who, c.message),
+        SubCommand::Init => commands::init(),
+
+        SubCommand::CatFile(cf) => commands::catfile(&cf.git_ref, cf.output),
+        SubCommand::CommitTree(c) => {
+            let id = Id::from(&c.id).context("invalid ID format")?;
+            commands::commit_tree(id, c.who, c.message)
+        }
+        SubCommand::Debug(ty) => commands::debug(ty.what),
+        SubCommand::NewTree(m) => commands::new_tree(m.paths),
+    }
+}
 
 fn main() {
     let opts = args::Opts::parse();
@@ -24,24 +44,10 @@ fn main() {
         .init()
         .unwrap();
 
-    match opts.subcmd {
-        SubCommand::Add(a) => {
-            commands::add(a.files).unwrap();
-        }
-        SubCommand::CatFile(cf) => {
-            commands::catfile(&cf.git_ref, cf.output).unwrap();
-        }
-        SubCommand::CommitTree(c) => {
-            commands::commit_tree(c.id, c.who, c.message).unwrap();
-        }
-        SubCommand::Debug(ty) => {
-            commands::debug(ty.what).unwrap();
-        }
-        SubCommand::Init => {
-            commands::init().unwrap();
-        }
-        SubCommand::NewTree(m) => {
-            commands::new_tree(m.paths).unwrap();
+    match do_main(opts) {
+        Ok(_) => (), // success
+        Err(e) => {
+            eprintln!("Encountered error: {}", e);
         }
     }
 }

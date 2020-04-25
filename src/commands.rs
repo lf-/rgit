@@ -12,7 +12,7 @@ use crate::args;
 use crate::args::OutputType;
 use crate::index;
 use crate::objects::{Blob, Commit, Id, NameEntry, Object, Repo};
-use crate::tree::{load_tree_from_disk, save_subtree, SubTree, TreeEntry};
+use crate::tree::{index_to_tree, load_tree_from_disk, save_subtree, SubTree, TreeEntry};
 use crate::util::GitPath;
 
 pub(crate) fn init() -> Result<()> {
@@ -50,6 +50,7 @@ pub(crate) fn add(files: Vec<String>) -> Result<()> {
 
             let path = path.to_git_path();
 
+            debug!("adding {}", path);
             index::add_to_index(&mut my_index, &path, &repo)?;
         }
     }
@@ -60,6 +61,14 @@ pub(crate) fn add(files: Vec<String>) -> Result<()> {
     repo.write_index(&my_index)?;
 
     Ok(())
+}
+
+pub(crate) fn commit(who: String, message: String) -> Result<()> {
+    let repo = Repo::new().context("failed to find repo")?;
+
+    let index_tree = index_to_tree(&repo.index()?);
+    let id = save_subtree(&mut TreeEntry::SubTree(index_tree), &repo)?;
+    commit_tree(id, who, message)
 }
 
 pub(crate) fn status() -> Result<()> {
@@ -89,9 +98,8 @@ pub(crate) fn status() -> Result<()> {
 // Plumbing Commands
 // -----------------------------------------
 
-pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()> {
+pub(crate) fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("couldn't find repo")?;
-    let id = Id::from(&id).context("invalid ID format")?;
     if !repo.has_id(&id) {
         return Err(anyhow!("given ID does not exist in the database"));
     }

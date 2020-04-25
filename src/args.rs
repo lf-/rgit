@@ -16,6 +16,13 @@ pub(crate) enum SubCommand {
     /// ➕ adds the given files or directories (recurses!) to the repo
     Add(Add),
 
+    /// 🔃 Commit the tree state in the index
+    Commit(Commit),
+
+    /// ✨ makes a new repo
+    Init,
+
+    // ----- Plumbing -----
     /// 🐱 dumps the content of an object file with a given ID
     CatFile(CatFile),
 
@@ -24,9 +31,6 @@ pub(crate) enum SubCommand {
 
     /// 🐛 dumps debug info about various files
     Debug(Debug),
-
-    /// ✨ makes a new repo
-    Init,
 
     /// 🌳 makes a tree object from the given file paths
     NewTree(NewTree),
@@ -56,6 +60,18 @@ pub(crate) struct CatFile {
     #[clap(long, short = "o", required = false, case_insensitive = true,
            default_value = "Raw", possible_values = &OutputType::variants())]
     pub(crate) output: OutputType,
+}
+
+#[derive(Clap)]
+pub(crate) struct Commit {
+    #[clap(long, case_insensitive = true)]
+    /// Who to commit/author as. Format (remember to quote!):
+    /// your_name <email@example.com>
+    pub(crate) who: String,
+
+    #[clap(long, short = "m", case_insensitive = true)]
+    /// Commit message
+    pub(crate) message: String,
 }
 
 #[derive(Clap)]

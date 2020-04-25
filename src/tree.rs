@@ -52,6 +52,7 @@ impl TreeEntry {
     }
 }
 
+/// Makes a SubTree object out of the tree in the index
 pub fn index_to_tree(index: &Index) -> SubTree {
     let mut root_st = SubTree::new();
 
@@ -59,15 +60,18 @@ pub fn index_to_tree(index: &Index) -> SubTree {
         let mut inserting_into = &mut root_st;
 
         let mut parts = path.split("/").peekable();
+        let filename;
+
         // Get a reference to the SubTree of the last directory in the path
         // XXX: are there symlink bugs?
         loop {
+            let part = parts.next().unwrap();
             // Exclude the last element
             if parts.peek().is_none() {
+                filename = part;
                 break;
             }
 
-            let part = parts.next().unwrap();
             inserting_into = inserting_into
                 .entry(part.to_string())
                 .or_insert_with(|| TreeEntry::SubTree(SubTree::new()))
@@ -75,7 +79,7 @@ pub fn index_to_tree(index: &Index) -> SubTree {
                 .expect("component was not a directory?!");
         }
 
-        inserting_into.insert(path.clone(), TreeEntry::Blob(entry.id));
+        inserting_into.insert(filename.to_string(), TreeEntry::Blob(entry.id));
     }
     root_st
 }

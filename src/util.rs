@@ -34,3 +34,17 @@ pub(crate) fn to_bytes_literal(s: &[u8]) -> String {
     }
     res
 }
+
+#[cfg(test)]
+mod test {
+    use super::GitPath;
+    use std::path::Path;
+
+    #[test]
+    fn test_git_path() {
+        let path = Path::new("a/b");
+        assert_eq!(path.to_git_path(), "a/b");
+        let path = Path::new("a");
+        assert_eq!(path.to_git_path(), "a");
+    }
+}
