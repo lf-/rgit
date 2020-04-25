@@ -3,14 +3,16 @@ use chrono::{DateTime, FixedOffset};
 use flate2::bufread::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use safecast::Safecast;
 use sha1::{Digest, Sha1};
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str;
 
+use crate::index;
 use crate::num;
 
 fn open_compressed(path: &Path) -> Result<impl Read> {
@@ -28,7 +30,7 @@ pub trait GitObject {
     fn tag(&self) -> Vec<u8>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Id([u8; 20]);
 
@@ -120,7 +122,7 @@ impl Repo {
     }
 
     /// Opens an object of given ID for reading
-    pub fn open_object(&self, id: &Id) -> Result<impl Read> {
+    pub fn open_object_raw(&self, id: &Id) -> Result<impl Read> {
         open_compressed(&self.path_for_object(id))
     }
 
@@ -156,6 +158,18 @@ impl Repo {
             .to_path_buf()
     }
 
+    /// Finds a path relative to the repo root. This is used for uses such as
+    /// storing paths in the index among other things.
+    pub fn repo_relative<P: AsRef<Path>>(&self, path: P) -> Result<PathBuf> {
+        // Windows: canonicalize on the path we're looking at will put a \\?\ on
+        // the start, which we need to replicate on the repo root as well; the
+        // easiest way to do this is by calling `.canonicalize()` on it as well
+        let tree = self.tree_root().canonicalize()?;
+
+        let canonical = path.as_ref().canonicalize()?;
+        Ok(canonical.strip_prefix(tree)?.to_path_buf())
+    }
+
     /// Stores a git object to disk and gives you its ID.
     pub fn store(&self, obj: &dyn GitObject) -> Result<Id> {
         let (id, content) = Object::prepare_store(obj);
@@ -180,7 +194,7 @@ impl Repo {
     /// structure
     pub fn open(&self, id: &Id) -> Result<Object> {
         let mut stream = self
-            .open_object(&id)
+            .open_object_raw(&id)
             .context(format!("Failed to open object {} on disk", id))?;
 
         let mut buf = Default::default();
@@ -191,6 +205,35 @@ impl Repo {
         ))?;
         // question mark operator *inside* an Ok is possibly evil
         Ok(Object::parse(buf).context(format!("Failed to parse object {}", id))?)
+    }
+
+    /// Returns the current index of this repository.
+    pub fn index(&self) -> Result<index::Index> {
+        let indexfile = self.root.join("index");
+        let file = fs::OpenOptions::new().read(true).open(indexfile);
+
+        if let Err(e) = file {
+            match e.kind() {
+                // The index file doesn't exist. We should make one.
+                io::ErrorKind::NotFound => {
+                    return Ok(index::Index::new());
+                }
+                _ => return Err(e.into()),
+            }
+        }
+
+        let reader = BufReader::new(file.unwrap());
+        index::parse(reader)
+    }
+
+    pub fn write_index(&self, new_index: &index::Index) -> Result<()> {
+        let indexfile = self.root.join("index");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(indexfile)?;
+        index::write_to_file(new_index, BufWriter::new(file))
     }
 }
 
@@ -332,12 +375,20 @@ impl GitObject for Blob {
 impl Blob {
     pub fn new_from_disk(path: &Path) -> Result<Blob> {
         Ok(Blob {
-            content: fs::read(path)?,
+            content: fs::read(path)
+                .with_context(|| format!("making blob from {}", path.display()))?,
         })
     }
 }
 
 impl File {
+    pub fn is_dir(&self) -> bool {
+        // XXX: refactor: we should store these as enums since they actually
+        // just encode object type and executable status
+
+        (self.mode >> 9) & ((1 << 9) - 1) == 0o040
+    }
+
     fn encode(&self) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend(format!("{:o}", self.mode).into_bytes());
@@ -347,6 +398,23 @@ impl File {
         v.extend(&self.id.0);
         v
     }
+}
+
+#[test]
+fn test_file_is() {
+    let d = File {
+        name: "d".to_string(),
+        mode: 0o40000,
+        id: Id(*b"00000000000000000000"),
+    };
+    let f = File {
+        name: "f".to_string(),
+        mode: 0o100644,
+        id: Id(*b"00000000000000000000"),
+    };
+
+    assert!(d.is_dir());
+    assert!(!f.is_dir());
 }
 
 #[test]

@@ -1,18 +1,19 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, FixedOffset, Local};
 use std::ascii;
-use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::{BufReader, Read, Write};
-use std::mem;
 use std::path::Path;
+use walkdir::WalkDir;
 
 use crate::args;
 use crate::args::OutputType;
 use crate::index;
-use crate::objects::{Blob, Commit, File, Id, NameEntry, Object, Repo, Tree};
+use crate::objects::{Blob, Commit, Id, NameEntry, Object, Repo};
+use crate::tree::{load_tree_from_disk, save_subtree, SubTree, TreeEntry};
+use crate::util::GitPath;
 
 pub(crate) fn init() -> Result<()> {
     if Repo::new().is_some() {
@@ -26,6 +27,67 @@ pub(crate) fn init() -> Result<()> {
     Repo::init(&env::current_dir()?)?;
     Ok(())
 }
+
+pub(crate) fn add(files: Vec<String>) -> Result<()> {
+    let repo = Repo::new().context("failed to find repo")?;
+    let mut my_index = repo.index()?;
+
+    for file in files {
+        let file = Path::new(&file);
+        if !file.exists() {
+            return Err(anyhow!("Path {} does not exist!", file.display()));
+        }
+
+        let wd = WalkDir::new(file).follow_links(false);
+
+        'inner: for f in wd {
+            let f: walkdir::DirEntry = f?;
+            if f.file_type().is_dir() {
+                continue 'inner;
+            }
+
+            let path = repo.repo_relative(f.path())?;
+
+            let path = path.to_git_path();
+
+            index::add_to_index(&mut my_index, &path, &repo)?;
+        }
+    }
+    let unsorted = my_index.clone();
+    my_index.sort_by(|(name, _), (name2, _)| name.cmp(name2));
+    assert_eq!(unsorted, my_index);
+
+    repo.write_index(&my_index)?;
+
+    Ok(())
+}
+
+pub(crate) fn status() -> Result<()> {
+    let repo = Repo::new().context("failed to find repo")?;
+
+    let head = repo
+        .head()?
+        .context("Repo does not have a HEAD. You can commit to create one.")?;
+
+    let cmt = match repo.open(&head)? {
+        Object::Commit(cmt) => cmt,
+        _ => return Err(anyhow!("HEAD was not a commit")),
+    };
+
+    let tree = match repo.open(&cmt.tree)? {
+        Object::Tree(t) => t,
+        _ => return Err(anyhow!("commit tree was not a tree")),
+    };
+
+    // Optimization: use the cached subtree extension
+
+    let realized = load_tree_from_disk(tree, &repo)?;
+    Ok(())
+}
+
+// -----------------------------------------
+// Plumbing Commands
+// -----------------------------------------
 
 pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("couldn't find repo")?;
@@ -65,77 +127,6 @@ pub(crate) fn commit_tree(id: String, who: String, message: String) -> Result<()
     Ok(())
 }
 
-type SubTree = BTreeMap<String, TreeEntry>;
-
-#[derive(Debug)]
-enum TreeEntry {
-    Blob(Id),
-    Tree(Id),
-    SubTree(SubTree),
-}
-
-impl TreeEntry {
-    fn subtree_mut(&mut self) -> Option<&mut SubTree> {
-        if let TreeEntry::SubTree(st) = self {
-            Some(st)
-        } else {
-            None
-        }
-    }
-    fn subtree(&self) -> Option<&SubTree> {
-        if let TreeEntry::SubTree(st) = self {
-            Some(st)
-        } else {
-            None
-        }
-    }
-
-    /// generates the expected permissions for a file or directory in git
-    /// sorta spiny, don't call it on a non-flat object
-    fn perms(&self) -> (&Id, u32) {
-        match self {
-            TreeEntry::Blob(id) => (id, 0o100644),
-            TreeEntry::Tree(id) => (id, 0o040000),
-            _ => unreachable!("asked for permissions on an unflattened tree {:?}", self),
-        }
-    }
-}
-
-/// Saves a *flattened* tree to disk
-/// Warning: it will panic if the tree is not flat!
-fn save_subtree_to_disk(st: &SubTree, repo: &Repo) -> Result<Id> {
-    let files = st.iter().map(|(name, e)| {
-        let (id, mode) = e.perms();
-        File {
-            id: id.clone(),
-            mode,
-            name: name.clone(),
-        }
-    });
-    let tree = Tree {
-        files: files.collect(),
-    };
-    repo.store(&tree)
-}
-
-/// Saves an unflattened subtree to disk
-fn save_subtree(subtree: &mut TreeEntry, repo: &Repo) -> Result<Id> {
-    for (_, st) in subtree.subtree_mut().unwrap() {
-        match st {
-            TreeEntry::SubTree(_) => {
-                let saved = TreeEntry::Tree(save_subtree(st, repo)?);
-                mem::replace(st, saved);
-            }
-            TreeEntry::Blob(_) | TreeEntry::Tree(_) => {
-                // we don't need to save these
-            }
-        }
-    }
-    // if we've escaped this loop, there are no more subtrees in our subtree. We
-    // may save it now
-    save_subtree_to_disk(subtree.subtree().unwrap(), repo)
-}
-
 /// Create a new tree object, ready to commit.
 pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find .git")?;
@@ -152,12 +143,10 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
     // `.canonicalize()` is called which gets caught in the machinery of
     // strip_prefix, so we ensure the thing we're stripping also has the same
     // artifact
-    let tree_root = repo.tree_root().canonicalize()?;
     let mut tree = TreeEntry::SubTree(SubTree::new());
 
     for &path in &paths {
-        let canonical = path.canonicalize()?;
-        let repo_relative = canonical.strip_prefix(&tree_root)?;
+        let repo_relative = repo.repo_relative(path)?;
 
         let blob = Blob::new_from_disk(path)
             .context(anyhow!("failed to read blob {} from disk", &path.display()))?;
@@ -198,7 +187,7 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
 pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
     let id = Id::from(id).context("invalid ID format")?;
     let repo = Repo::new().context("failed to find repo")?;
-    let mut h = repo.open_object(&id)?;
+    let mut h = repo.open_object_raw(&id)?;
     match output {
         OutputType::Raw => {
             io::copy(&mut h, &mut io::stdout())?;

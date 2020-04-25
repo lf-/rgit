@@ -80,7 +80,7 @@ checksum = "08c48aae112d48ed9f069b33538ea9e3e90aa263cfa3d1c24309612b1f7472de"
 [[package]]
 name = "bytesafe"
 version = "0.1.0"
-source = "git+https://github.com/lf-/safecast?branch=patch-1#fb26db2163d2043024a7cbf34078ede5a817c382"
+source = "git+https://github.com/lf-/safecast#654c48aeba13637cd7fd54fc012285ba0d1b6016"
 
 [[package]]
 name = "cfg-if"
@@ -331,14 +331,24 @@ dependencies = [
  "sha-1",
  "stderrlog",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
 name = "safecast"
 version = "0.1.0"
-source = "git+https://github.com/lf-/safecast?branch=patch-1#fb26db2163d2043024a7cbf34078ede5a817c382"
+source = "git+https://github.com/lf-/safecast#654c48aeba13637cd7fd54fc012285ba0d1b6016"
 dependencies = [
  "bytesafe",
+]
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -515,6 +525,17 @@ name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
+
+[[package]]
+name = "walkdir"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777182bc735b6424e1a57516d35ed72cb8019d85c8c9bf536dccb3445c1a2f7d"
+dependencies = [
+ "same-file",
+ "winapi",
+ "winapi-util",
+]
 
 [[package]]
 name = "winapi"

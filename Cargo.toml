@@ -12,8 +12,9 @@ anyhow = "1.0.28"
 clap = { git = "https://github.com/clap-rs/clap/" }
 chrono = "0.4.11"
 sha-1 = "0.8.2"
-safecast = { git = "https://github.com/lf-/safecast", branch = "patch-1" }
+safecast = { git = "https://github.com/lf-/safecast" }
 thiserror = "1.0.15"
 bitflags = "1.2.1"
 stderrlog = "0.4.3"
 log = "0.4.8"
+walkdir = "2.3.1"

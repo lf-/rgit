@@ -13,6 +13,9 @@ pub(crate) struct Opts {
 
 #[derive(Clap)]
 pub(crate) enum SubCommand {
+    /// ➕ adds the given files or directories (recurses!) to the repo
+    Add(Add),
+
     /// 🐱 dumps the content of an object file with a given ID
     CatFile(CatFile),
 
@@ -27,6 +30,13 @@ pub(crate) enum SubCommand {
 
     /// 🌳 makes a tree object from the given file paths
     NewTree(NewTree),
+}
+
+#[derive(Clap)]
+pub(crate) struct Add {
+    /// Files to add to the repo
+    #[clap(index = 1, multiple = true)]
+    pub(crate) files: Vec<String>,
 }
 
 // :( this should be pub(crate) but the macro eats it

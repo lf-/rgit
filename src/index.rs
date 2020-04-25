@@ -1,6 +1,6 @@
+/// Low-level functions for working with an index
 use crate::objects::{Blob, Id, Repo};
-use crate::util::ByteString;
-use anyhow::{Error, Result};
+use anyhow::{Context, Error, Result};
 use safecast::Safecast;
 use sha1::{Digest, Sha1};
 use std::fmt;
@@ -14,6 +14,9 @@ use thiserror::Error;
 const SIGNATURE: [u8; 4] = *b"DIRC";
 const VERSION: u32 = 2;
 
+/// Files indexed in this index. Must be kept sorted.
+pub type Index = Vec<(String, IndexEntry)>;
+
 #[derive(Error, Debug)]
 pub enum IndexError {
     #[error("Unsupported index version {0}")]
@@ -23,10 +26,10 @@ pub enum IndexError {
     BadMagic,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 #[allow(non_camel_case_types)]
-struct u32be([u8; 4]);
+pub struct u32be([u8; 4]);
 
 impl From<u32be> for u32 {
     fn from(be: u32be) -> Self {
@@ -47,16 +50,10 @@ impl fmt::Debug for u32be {
     }
 }
 
-// Safety: u32be is composed of a slice of a Safecast type that requires no
-// further checking. It must be #[repr(transparent)] because of this impl.
-unsafe impl Safecast for u32be {
-    fn safecast(&self) {}
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 #[allow(non_camel_case_types)]
-struct u16be([u8; 2]);
+pub struct u16be([u8; 2]);
 
 impl From<u16be> for u16 {
     fn from(be: u16be) -> Self {
@@ -70,22 +67,11 @@ impl From<u16> for u16be {
     }
 }
 
-// Safety: u16be is composed of a slice of a Safecast type that requires no
-// further checking. It must be #[repr(transparent)] because of this impl.
-unsafe impl Safecast for u16be {
-    fn safecast(&self) {}
-}
-
 impl fmt::Debug for u16be {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let numeric: u16 = self.clone().into();
         fmt::Debug::fmt(&numeric, f)
     }
-}
-
-// Safety: Id is a slice of bytes which is Safecast-able
-unsafe impl Safecast for Id {
-    fn safecast(&self) {}
 }
 
 #[derive(Safecast, Debug)]
@@ -105,45 +91,42 @@ struct Header {
 #[repr(C)]
 /// order: sorted in ascending order on name field, sorted in byte comparison order
 pub struct IndexEntry {
-    ctime: u32be,
-    ctime_ns: u32be,
+    pub ctime: u32be,
+    pub ctime_ns: u32be,
 
-    mtime: u32be,
-    mtime_ns: u32be,
+    pub mtime: u32be,
+    pub mtime_ns: u32be,
 
-    dev: u32be,
-    ino: u32be,
+    pub dev: u32be,
+    pub ino: u32be,
 
-    /// [31:16] unused, left zero; unaccounted for in docs (?????)
-    /// [15:12] object type: regular file (0b1000); symbolic link (0b1010);
+    /// \[31:16\] unused, left zero; unaccounted for in docs (?????)
+    /// \[15:12\] object type: regular file (0b1000); symbolic link (0b1010);
     ///         gitlink (0b1110)
-    /// [11:9] unused, left zero
-    /// [8:0] unix permission: 0o0755 or 0o0644 for files, symlinks are 0
-    mode: u32be,
+    /// \[11:9\] unused, left zero
+    /// \[8:0\] unix permission: 0o0755 or 0o0644 for files, symlinks are 0
+    pub mode: u32be,
 
-    uid: u32be,
-    gid: u32be,
+    pub uid: u32be,
+    pub gid: u32be,
 
-    size: u32be,
+    pub size: u32be,
 
-    id: Id,
+    pub id: Id,
 
-    /// [16] assume-valid flag
-    /// [15] extended flag
-    /// [14:13] stage
-    /// [12:0] name length or 0xFFF (if name is longer)
-    flags: u16be,
+    /// \[16\] assume-valid flag
+    /// \[15\] extended flag
+    /// \[14:13\] stage
+    /// \[12:0\] name length or 0xFFF (if name is longer)
+    pub flags: u16be,
     // TODO: added in v3 but we choose not to implement that yet
     //
-    // /// [16] reserved
-    // /// [15] skip-worktree flag
-    // /// [14] intent-to-add (related to git add --patch)
-    // /// [13:0] unused; must be zero
+    // /// \[16\] reserved
+    // /// \[15\] skip-worktree flag
+    // /// \[14\] intent-to-add (related to git add --patch)
+    // /// \[13:0\] unused; must be zero
     // eflags: u16be,
 }
-
-/// Files indexed in this index. Must be kept sorted.
-type Index = Vec<(ByteString, IndexEntry)>;
 
 #[derive(Debug, PartialEq)]
 pub struct StatInfo {
@@ -165,7 +148,7 @@ pub struct UnixStat {
 impl UnixStat {
     /// Gets the unix-specific stat stuff. Not implemented on Unix yet but zero
     /// is an acceptable value
-    fn get(meta: &fs::Metadata) -> UnixStat {
+    fn get(_meta: &fs::Metadata) -> UnixStat {
         Default::default()
     }
 
@@ -181,7 +164,12 @@ impl UnixStat {
 impl StatInfo {
     fn get(path: &Path) -> Result<StatInfo> {
         // XXX: these u32 timestamps will break after 2038 but git will break too 🤷‍♀️
-        let meta = fs::metadata(path)?;
+        let meta = fs::metadata(path).with_context(|| {
+            format!(
+                "failed to find metadata for {} while making index",
+                path.display()
+            )
+        })?;
 
         let mtime = system_time_to_epoch(meta.modified()?)?;
         let ctime = system_time_to_epoch(meta.modified()?)?;
@@ -211,16 +199,14 @@ impl PartialEq for UnixStat {
 }
 
 impl IndexEntry {
-    pub fn new_from_file(name: &ByteString, repo: &Repo) -> Result<IndexEntry> {
-        // XXX: prevents us from supporting non-UTF-8 file names
-        let filename = std::str::from_utf8(&name.0)?;
+    pub fn new_from_file(filename: &str, repo: &Repo) -> Result<IndexEntry> {
+        let path = repo.tree_root().join(filename);
 
-        let path = repo.root.join(filename);
         let id = repo.store(&Blob::new_from_disk(&path)?)?;
         let statinfo = StatInfo::get(&path)?;
 
         // bottom 12 bits of the name length are flags
-        let flags = (name.len() & 0xfff) as u16;
+        let flags = (filename.len() & 0xfff) as u16;
 
         Ok(IndexEntry {
             ctime: statinfo.ctime.0.into(),
@@ -257,30 +243,33 @@ impl IndexEntry {
 }
 
 /// Ensure a file is in an index. `name` is a repo-relative path.
-pub fn add_to_index(index: &mut Index, filename: &ByteString, repo: &Repo) -> Result<()> {
-    let existing_entry = index.binary_search_by(|(name, _)| name.cmp(filename));
+pub fn add_to_index(index: &mut Index, filename: &str, repo: &Repo) -> Result<Id> {
+    let existing_entry = index.binary_search_by(|(name, _)| name.as_str().cmp(filename));
 
-    let path = repo.root.join(std::str::from_utf8(&filename.0)?);
+    let path = repo.tree_root().join(filename);
     let filestats = StatInfo::get(&path)?;
 
-    match existing_entry {
+    Ok(match existing_entry {
         // If it's in the index and all the stats are the same, we can assume
         // it's the same and no-op
-        Ok(found) if index[found].1.statinfo() == filestats => (),
+        Ok(found) if index[found].1.statinfo() == filestats => index[found].1.id.clone(),
 
         // It's in the index but the entry is old. Replace the entry.
         Ok(found) => {
             let new_entry = IndexEntry::new_from_file(filename, repo)?;
+            let id = new_entry.id.clone();
             index[found].1 = new_entry;
+            id
         }
 
         // Not in the index
         Err(idx) => {
             let new_entry = IndexEntry::new_from_file(filename, repo)?;
-            index.insert(idx, (filename.clone(), new_entry));
+            let id = new_entry.id.clone();
+            index.insert(idx, (filename.to_string(), new_entry));
+            id
         }
-    };
-    Ok(())
+    })
 }
 
 pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
@@ -299,13 +288,15 @@ pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
         file.write_all(entry_buf)?;
         hash.input(entry_buf);
 
-        // Make a name record with the correct null padding
+        // Figure out how long the name field is then produce padding to write
+        // after the name to make it that length
         let namerecsz = name_record_size(name.len());
-        let mut namerec = name.clone();
-        namerec.resize(namerecsz, 0x00);
+        let padding_zeros = vec![0u8; namerecsz - name.len()];
 
-        file.write_all(&namerec)?;
-        hash.input(&namerec.0);
+        file.write_all(name.as_bytes())?;
+        file.write_all(&padding_zeros)?;
+        hash.input(&name);
+        hash.input(&padding_zeros);
     }
 
     // write a hash of the contents at the end of the file
@@ -363,12 +354,15 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
         let record_sz = name_record_size(name_length);
 
         // we deliberately choose to keep the vector at the size of the longest name
-        if name.capacity() < record_sz {
+        if name.len() < record_sz {
             name.resize_with(record_sz, Default::default);
         }
 
         file.read_exact(&mut name[..record_sz])?;
-        files.push((ByteString(Vec::from(&name[..name_length])), entry.clone()))
+        files.push((
+            std::str::from_utf8(&name[..name_length])?.to_string(),
+            entry.clone(),
+        ));
     }
 
     Ok(files)
@@ -390,7 +384,7 @@ mod tests {
     fn test_index() {
         let index = vec![
             (
-                super::ByteString((*b"item1").into()),
+                "item1".to_string(),
                 super::IndexEntry {
                     ctime: 0x5e9bf1c6.into(),
                     ctime_ns: 0x26545c10.into(),
@@ -407,7 +401,7 @@ mod tests {
                 },
             ),
             (
-                super::ByteString((*b"item2").into()),
+                "item2".to_string(),
                 super::IndexEntry {
                     ctime: 0x5e9bf1c9.into(),
                     ctime_ns: 0xb204508.into(),
@@ -440,7 +434,7 @@ mod tests {
     fn test_index_tree() {
         let index = vec![
             (
-                super::ByteString((*b"dir/item").into()),
+                "dir/item".to_string(),
                 super::IndexEntry {
                     ctime: 0x5e9bc19e.into(),
                     ctime_ns: 0x217b3358.into(),
@@ -457,7 +451,7 @@ mod tests {
                 },
             ),
             (
-                super::ByteString((*b"file2").into()),
+                "file2".to_string(),
                 super::IndexEntry {
                     ctime: 0x5e9bbee2.into(),
                     ctime_ns: 0x1b0f3be0.into(),

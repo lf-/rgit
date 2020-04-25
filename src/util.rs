@@ -1,32 +1,28 @@
 use std::ascii;
-use std::fmt;
+use std::path::Path;
 
-/// A byte string wrapped in a type
-#[derive(Clone, PartialEq)]
-pub struct ByteString(pub Vec<u8>);
-
-impl fmt::Display for ByteString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", to_bytes_literal(&self.0))
-    }
+/// A path in Git format: UTF-8 with forward slash as delimiter
+pub trait GitPath {
+    /// Stringifies a path in Git format
+    ///
+    /// Git stores paths in UTF-8 normalization form "C". It does not accept
+    /// unpaired surrogate byte sequences, so we can use normal encoding
+    /// functions to handle them.
+    ///
+    /// Note that there is one known inconsistency with this: on Unix platforms,
+    /// lone continuation bytes in filenames are tolerated by Git (?????) in
+    /// spite of being invalid UTF-8. We choose deliberately to ignore this
+    /// and just put U+FFFD REPLACEMENT CHARACTERs instead of any illegal
+    /// characters.
+    ///
+    /// This function copies the path into a new String.
+    fn to_git_path(&self) -> String;
 }
 
-impl fmt::Debug for ByteString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "b\"{}\"", self)
-    }
-}
-
-impl std::ops::Deref for ByteString {
-    type Target = Vec<u8>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ByteString {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl GitPath for Path {
+    fn to_git_path(&self) -> String {
+        let parts: Vec<_> = self.iter().map(|comp| comp.to_string_lossy()).collect();
+        parts.join("/")
     }
 }
 

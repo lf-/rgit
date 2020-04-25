@@ -3,6 +3,7 @@ mod commands;
 mod index;
 mod num;
 mod objects;
+mod tree;
 mod util;
 
 use args::SubCommand;
@@ -24,6 +25,9 @@ fn main() {
         .unwrap();
 
     match opts.subcmd {
+        SubCommand::Add(a) => {
+            commands::add(a.files).unwrap();
+        }
         SubCommand::CatFile(cf) => {
             commands::catfile(&cf.git_ref, cf.output).unwrap();
         }
