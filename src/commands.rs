@@ -12,8 +12,11 @@ use crate::args;
 use crate::args::OutputType;
 use crate::index;
 use crate::objects::{Blob, Commit, Id, NameEntry, Object, Repo};
-use crate::tree::{index_to_tree, load_tree_from_disk, save_subtree, SubTree, TreeEntry};
+use crate::tree::{
+    diff_file_lists, index_to_tree, load_tree_from_disk, save_subtree, Diff, SubTree, TreeEntry,
+};
 use crate::util::GitPath;
+use index::IndexEntry;
 
 pub(crate) fn init() -> Result<()> {
     if Repo::new().is_some() {
@@ -55,7 +58,7 @@ pub(crate) fn add(files: Vec<String>) -> Result<()> {
         }
     }
     let unsorted = my_index.clone();
-    my_index.sort_by(|(name, _), (name2, _)| name.cmp(name2));
+    my_index.sort_by(|IndexEntry { name, .. }, IndexEntry { name: name2, .. }| name.cmp(name2));
     assert_eq!(unsorted, my_index);
 
     repo.write_index(&my_index)?;
@@ -83,14 +86,50 @@ pub(crate) fn status() -> Result<()> {
         _ => return Err(anyhow!("HEAD was not a commit")),
     };
 
-    let tree = match repo.open(&cmt.tree)? {
+    let head_tree = match repo.open(&cmt.tree)? {
         Object::Tree(t) => t,
         _ => return Err(anyhow!("commit tree was not a tree")),
     };
 
     // Optimization: use the cached subtree extension
+    let mut head_filelist = Vec::new();
+    load_tree_from_disk(head_tree, &repo, "", &mut head_filelist)?;
 
-    let realized = load_tree_from_disk(tree, &repo)?;
+    let diff_head: Vec<_> = head_filelist
+        .iter()
+        .map(|(ref name, ref id)| (name.as_str(), id))
+        .collect();
+
+    let index_filelist = repo.index()?;
+    let diff_index: Vec<_> = index_filelist
+        .iter()
+        .map(|IndexEntry { ref name, meta: ie }| (name.as_str(), &ie.id))
+        .collect();
+    let diffs = diff_file_lists(&diff_head, &diff_index, |a, b| a == b);
+
+    let sigil = |d| match d {
+        Diff::Different => "~",
+        Diff::ExtraInLeft => "+",
+        Diff::ExtraInRight => "-",
+    };
+
+    println!("Changes to commit:");
+    for (name, diff) in diffs {
+        println!("{} {}", sigil(diff), name);
+    }
+
+    let modified = index_filelist.iter().filter(|ie| {
+        !ie.is_same_as_tree(&repo)
+            .expect("hecked up while checking if files are the same as they are in the tree")
+    });
+
+    // TODO: show untracked files
+    println!("\nModified files in working tree");
+    for f in modified {
+        println!("~ {}", f.name);
+    }
+
+    // Look for new files
     Ok(())
 }
 

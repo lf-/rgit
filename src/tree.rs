@@ -1,11 +1,11 @@
+//! Functions for handling git trees as tree structures
 use anyhow::{Context, Result};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem;
-/// Functions for handling git trees as tree structures
-use std::path::Path;
 use thiserror::Error;
 
-use crate::index::Index;
+use crate::index::{Index, IndexEntry};
 use crate::objects::{File, Id, Object, Repo, Tree};
 
 #[derive(Error, Debug)]
@@ -17,7 +17,7 @@ pub enum TreeError {
 pub type SubTree = BTreeMap<String, TreeEntry>;
 
 /// A recursive tree structure based on BTreeMap to represent a repository tree
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum TreeEntry {
     Blob(Id),
     Tree(Id),
@@ -52,11 +52,108 @@ impl TreeEntry {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+/// A type to represent differences between two trees
+pub enum Diff {
+    Different,
+    ExtraInRight,
+    ExtraInLeft,
+}
+
+/// Finds the differences between two flat, sorted file lists
+pub fn diff_file_lists<'a, 'b, T, F>(
+    left: &[(&'a str, &'b T)],
+    right: &[(&'a str, &'b T)],
+    comparator: F,
+) -> Vec<(&'a str, Diff)>
+where
+    T: Eq,
+    F: Fn(&'b T, &'b T) -> bool,
+{
+    // lists MUST be sorted, check this invariant before we make mistakes
+    assert!(
+        left.is_sorted_by_key(|&(name, _)| name) && right.is_sorted_by_key(|&(name, _)| name),
+        "Input MUST be sorted"
+    );
+
+    let mut diffs = Vec::new();
+
+    let mut liter = left.iter();
+    let mut riter = right.iter();
+
+    let mut lnext = liter.next();
+    let mut rnext = riter.next();
+    // loop through both left and right structures at once
+    loop {
+        match (lnext, rnext) {
+            // A A
+            // - -
+            (None, None) => break,
+
+            // A A
+            // - B
+            (None, Some((r, _))) => {
+                diffs.push((*r, Diff::ExtraInRight));
+                rnext = riter.next();
+            }
+
+            // A A
+            // B -
+            (Some((l, _)), None) => {
+                diffs.push((l, Diff::ExtraInLeft));
+                lnext = liter.next();
+            }
+
+            // A:1 A:1
+            // ?:? ?:?
+            (Some((l, li)), Some((r, ri))) => {
+                match l.cmp(r) {
+                    // A:1 A:1
+                    // B:2 B:2
+                    Ordering::Equal if comparator(li, ri) => {
+                        lnext = liter.next();
+                        rnext = riter.next();
+                    }
+
+                    // A:1 A:1
+                    // B:2 B:3
+                    Ordering::Equal => {
+                        diffs.push((l, Diff::Different));
+                        lnext = liter.next();
+                        rnext = riter.next();
+                    }
+
+                    // A:1 A:1
+                    // B:? C:?
+                    Ordering::Less => {
+                        diffs.push((l, Diff::ExtraInLeft));
+                        // catch up
+                        lnext = liter.next();
+                    }
+
+                    // A:1 A:1
+                    // C:? B:?
+                    Ordering::Greater => {
+                        diffs.push((r, Diff::ExtraInRight));
+                        // catch up
+                        rnext = riter.next();
+                    }
+                }
+            }
+        }
+    }
+    diffs
+}
+
 /// Makes a SubTree object out of the tree in the index
 pub fn index_to_tree(index: &Index) -> SubTree {
     let mut root_st = SubTree::new();
 
-    for (path, entry) in index {
+    for IndexEntry {
+        name: path,
+        meta: entry,
+    } in index
+    {
         let mut inserting_into = &mut root_st;
 
         let mut parts = path.split("/").peekable();
@@ -95,27 +192,32 @@ fn tree_or_err(id: &Id, repo: &Repo) -> Result<Tree> {
 
 /// Loads a Tree from the database and turns it into a realized SubTree structure
 /// for processing
-pub fn load_tree_from_disk(tree: Tree, repo: &Repo) -> Result<SubTree> {
+pub fn load_tree_from_disk(
+    tree: Tree,
+    repo: &Repo,
+    base_path: &str,
+    filelist: &mut Vec<(String, Id)>,
+) -> Result<()> {
     // TODO: probably should limit stack depth
 
-    let mut st = SubTree::new();
     for item in tree.files {
-        // silly borrow checker nonsense
         let is_dir = item.is_dir();
-        st.insert(
-            item.name,
-            match is_dir {
-                // if it's a directory, we can grab its entries recursively
-                true => {
-                    TreeEntry::SubTree(load_tree_from_disk(tree_or_err(&item.id, repo)?, repo)?)
-                }
 
-                // if it's a file we can put it directly into our tree
-                false => TreeEntry::Blob(item.id),
-            },
-        );
+        let path = if base_path == "" {
+            item.name
+        } else {
+            [base_path, &item.name].join("/")
+        };
+
+        if is_dir {
+            // if it's a directory we should recurse down and grab all its files
+            load_tree_from_disk(tree_or_err(&item.id, repo)?, repo, &path, filelist)?;
+        } else {
+            // we can stuff the file straight into the file list
+            filelist.push((path, item.id));
+        }
     }
-    Ok(st)
+    Ok(())
 }
 
 /// Saves a *flattened* tree to disk
@@ -151,4 +253,58 @@ pub fn save_subtree(subtree: &mut TreeEntry, repo: &Repo) -> Result<Id> {
     // if we've escaped this loop, there are no more subtrees in our subtree. We
     // may save it now
     save_subtree_to_disk(subtree.subtree().unwrap(), repo)
+}
+
+#[cfg(test)]
+mod test {
+    use super::Diff;
+    use crate::objects::Id;
+
+    #[test]
+    fn test_tree_comparison() {
+        let comparator = |a, b| a == b;
+        let mut tree1 = Vec::new();
+        let mut tree2 = Vec::new();
+
+        let id1 = Id::from("0000000000000000000000000000000000000000").unwrap();
+        let id2 = Id::from("ffffffffffffffffffffffffffffffffffffffff").unwrap();
+
+        tree1.push(("a", &id1));
+        tree2.push(("a", &id2));
+        let identical = tree1.clone();
+        let diffs = super::diff_file_lists(&tree1, &identical, comparator);
+
+        // identical trees should not have any diff output
+        assert_eq!(diffs.len(), 0);
+
+        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+
+        // 'a' should be different
+        assert_eq!(diffs, vec![("a", Diff::Different)]);
+
+        // an extra item in left
+        tree1.push(("b", &id1));
+        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+        assert_eq!(
+            diffs,
+            vec![("a", Diff::Different), ("b", Diff::ExtraInLeft)]
+        );
+
+        // test fast-forward advance
+        tree1.push(("aa", &id1));
+        tree2.push(("b", &id2));
+
+        // we only accept sorted trees
+        tree1.sort_by_key(|&(name, _)| name);
+        println!("tree 1: {:?}\ntree 2: {:?}", &tree1, &tree2);
+        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+        assert_eq!(
+            diffs,
+            vec![
+                ("a", Diff::Different),
+                ("aa", Diff::ExtraInLeft),
+                ("b", Diff::Different),
+            ]
+        );
+    }
 }

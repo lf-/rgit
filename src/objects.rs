@@ -634,7 +634,9 @@ impl Object {
         })
     }
 
-    fn prepare_store(obj: &dyn GitObject) -> (Id, Vec<u8>) {
+    /// Prepares an object for storage, getting its ID and content to store to
+    /// disk
+    pub fn prepare_store(obj: &dyn GitObject) -> (Id, Vec<u8>) {
         let typ = obj.tag();
         let encoded = obj.encode();
 

@@ -16,11 +16,14 @@ pub(crate) enum SubCommand {
     /// ➕ adds the given files or directories (recurses!) to the repo
     Add(Add),
 
-    /// 🔃 Commit the tree state in the index
+    /// 🔃 commits the tree state in the index
     Commit(Commit),
 
     /// ✨ makes a new repo
     Init,
+
+    /// ❓ queries the status of the index vs HEAD and the working tree
+    Status,
 
     // ----- Plumbing -----
     /// 🐱 dumps the content of an object file with a given ID

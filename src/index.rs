@@ -1,5 +1,5 @@
-/// Low-level functions for working with an index
-use crate::objects::{Blob, Id, Repo};
+//! Low-level functions for working with an index
+use crate::objects::{Blob, Id, Object, Repo};
 use anyhow::{Context, Error, Result};
 use safecast::Safecast;
 use sha1::{Digest, Sha1};
@@ -15,7 +15,7 @@ const SIGNATURE: [u8; 4] = *b"DIRC";
 const VERSION: u32 = 2;
 
 /// Files indexed in this index. Must be kept sorted.
-pub type Index = Vec<(String, IndexEntry)>;
+pub type Index = Vec<IndexEntry>;
 
 #[derive(Error, Debug)]
 pub enum IndexError {
@@ -87,10 +87,17 @@ struct Header {
     num_entries: u32be,
 }
 
-#[derive(Safecast, Clone, PartialEq, Debug)]
-#[repr(C)]
+/// Entry in the Git index
 /// order: sorted in ascending order on name field, sorted in byte comparison order
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
+    pub name: String,
+    pub meta: IndexMeta,
+}
+
+#[derive(Safecast, Clone, PartialEq, Eq, Debug)]
+#[repr(C)]
+pub struct IndexMeta {
     pub ctime: u32be,
     pub ctime_ns: u32be,
 
@@ -190,16 +197,41 @@ impl PartialEq for UnixStat {
     /// Compares a UnixStat, ignoring fields if they are zero
     fn eq(&self, other: &UnixStat) -> bool {
         (self.dev == 0 || self.dev == other.dev)
-            && (self.gid == 0 || self.gid == other.gid)
-            && (self.uid == 0 || self.uid == other.uid)
-            && (self.ino == 0 || self.ino == other.ino)
-            && (self.dev == 0 || self.dev == other.dev)
-            && (cfg!(target_family = "unix") && self.executable == other.executable)
+            && (self.gid == 0 || other.gid == 0 || self.gid == other.gid)
+            && (self.uid == 0 || other.uid == 0 || self.uid == other.uid)
+            && (self.ino == 0 || other.ino == 0 || self.ino == other.ino)
+            && (self.dev == 0 || other.dev == 0 || self.dev == other.dev)
+            && (cfg!(not(target_family = "unix")) || self.executable == other.executable)
     }
 }
 
 impl IndexEntry {
-    pub fn new_from_file(filename: &str, repo: &Repo) -> Result<IndexEntry> {
+    /// Checks if a file in the index has changed since it was added to the index
+    pub fn is_same_as_tree(&self, repo: &Repo) -> Result<bool> {
+        let filepath = &repo.tree_root().join(&self.name);
+        let si = StatInfo::get(&filepath)
+            .with_context(|| format!("finding filesystem stats for {}", filepath.display()))?;
+
+        if self.meta.statinfo() == si {
+            // the stat info is the same. Unless people are playing tricks on us
+            // (that's their fault) these files will be identical given
+            // identical mtime, ctime
+            return Ok(true);
+        }
+
+        // if they are in fact different, we need to expensively check whether
+        // the hashes of the files are the same
+        let blob = Blob::new_from_disk(&filepath)
+            .with_context(|| format!("making a blob of {}", filepath.display()))?;
+        let (id, _) = Object::prepare_store(&blob);
+        Ok(id == self.meta.id)
+    }
+}
+
+impl IndexMeta {
+    /// Generates the metadata for a given file as it would be if it were added
+    /// to the index
+    pub fn new_from_file(filename: &str, repo: &Repo) -> Result<IndexMeta> {
         let path = repo.tree_root().join(filename);
 
         let id = repo.store(&Blob::new_from_disk(&path)?)?;
@@ -210,7 +242,7 @@ impl IndexEntry {
 
         trace!("making index entry for {}", filename);
 
-        Ok(IndexEntry {
+        Ok(IndexMeta {
             ctime: statinfo.ctime.0.into(),
             ctime_ns: statinfo.ctime.1.into(),
             mtime: statinfo.mtime.0.into(),
@@ -244,9 +276,10 @@ impl IndexEntry {
     }
 }
 
-/// Ensure a file is in an index. `name` is a repo-relative path.
+/// Ensure a file is in an index. `filename` is a repo-relative path.
 pub fn add_to_index(index: &mut Index, filename: &str, repo: &Repo) -> Result<Id> {
-    let existing_entry = index.binary_search_by(|(name, _)| name.as_str().cmp(filename));
+    let existing_entry =
+        index.binary_search_by(|IndexEntry { name, .. }| name.as_str().cmp(filename));
 
     let path = repo.tree_root().join(filename);
     let filestats = StatInfo::get(&path)?;
@@ -254,21 +287,28 @@ pub fn add_to_index(index: &mut Index, filename: &str, repo: &Repo) -> Result<Id
     Ok(match existing_entry {
         // If it's in the index and all the stats are the same, we can assume
         // it's the same and no-op
-        Ok(found) if index[found].1.statinfo() == filestats => index[found].1.id.clone(),
+        Ok(found) if index[found].meta.statinfo() == filestats => index[found].meta.id.clone(),
 
-        // It's in the index but the entry is old. Replace the entry.
+        // It's in the index but the entry is old. Replace the entry. This will
+        // no-op if the file has been modified but has the same contents
         Ok(found) => {
-            let new_entry = IndexEntry::new_from_file(filename, repo)?;
+            let new_entry = IndexMeta::new_from_file(filename, repo)?;
             let id = new_entry.id.clone();
-            index[found].1 = new_entry;
+            index[found].meta = new_entry;
             id
         }
 
         // Not in the index
         Err(idx) => {
-            let new_entry = IndexEntry::new_from_file(filename, repo)?;
+            let new_entry = IndexMeta::new_from_file(filename, repo)?;
             let id = new_entry.id.clone();
-            index.insert(idx, (filename.to_string(), new_entry));
+            index.insert(
+                idx,
+                IndexEntry {
+                    name: filename.to_string(),
+                    meta: new_entry,
+                },
+            );
             id
         }
     })
@@ -285,8 +325,8 @@ pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
     file.write_all(header_buf)?;
     hash.input(header_buf);
 
-    for (name, entry) in index {
-        let entry_buf = entry.cast();
+    for IndexEntry { name, meta } in index {
+        let entry_buf = meta.cast();
         file.write_all(entry_buf)?;
         hash.input(entry_buf);
 
@@ -310,9 +350,9 @@ pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
 /// Finds the number of bytes that the name record in the index will occupy (with padding)
 fn name_record_size(name_length: usize) -> usize {
     // pad record incl name + nul byte to 8 byte boundary
-    let full_record_sz = mem::size_of::<IndexEntry>() + name_length;
+    let full_record_sz = mem::size_of::<IndexMeta>() + name_length;
     let full_record_sz = full_record_sz + (8 - full_record_sz % 8);
-    full_record_sz - mem::size_of::<IndexEntry>()
+    full_record_sz - mem::size_of::<IndexMeta>()
 }
 
 /// Reads an index out of a file
@@ -335,18 +375,18 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
     }
 
     let num_entries = u32::from(header.num_entries) as usize;
-    let mut buf = [0u8; mem::size_of::<IndexEntry>()];
     let mut name = Vec::new();
 
+    let mut buf = [0u8; mem::size_of::<IndexMeta>()];
     let mut files = Vec::with_capacity(num_entries);
 
     for _ in 0..num_entries {
         file.read_exact(&mut buf)?;
-        let entry = buf.cast::<IndexEntry>();
-        let entry: &IndexEntry = &entry[0];
+        let entry = buf.cast::<IndexMeta>();
+        let meta: &IndexMeta = &entry[0];
 
         // bottom 12 bits of flags is name size
-        let flags: u16 = entry.flags.into();
+        let flags: u16 = meta.flags.into();
         let name_length = (flags & 0xfff) as usize;
         if name_length == 0xfff {
             // must be measured manually. implementation not today
@@ -361,10 +401,10 @@ pub(crate) fn parse(mut file: impl io::Read) -> Result<Index> {
         }
 
         file.read_exact(&mut name[..record_sz])?;
-        files.push((
-            std::str::from_utf8(&name[..name_length])?.to_string(),
-            entry.clone(),
-        ));
+        files.push(IndexEntry {
+            name: std::str::from_utf8(&name[..name_length])?.to_string(),
+            meta: meta.clone(),
+        });
     }
 
     Ok(files)
@@ -379,15 +419,16 @@ fn system_time_to_epoch(systime: time::SystemTime) -> Result<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    use super::{IndexEntry, IndexMeta};
     const TEST_INDEX: &[u8] = include_bytes!("testdata/test_index");
     const TEST_INDEX_TREE: &[u8] = include_bytes!("testdata/test_index_tree");
 
     #[test]
     fn test_index() {
         let index = vec![
-            (
-                "item1".to_string(),
-                super::IndexEntry {
+            IndexEntry {
+                name: "item1".to_string(),
+                meta: IndexMeta {
                     ctime: 0x5e9bf1c6.into(),
                     ctime_ns: 0x26545c10.into(),
                     mtime: 0x5e9bf1ce.into(),
@@ -401,10 +442,10 @@ mod tests {
                     id: super::Id::from("07d4aba2654d6d44c24862467d86ee8eb67840fe").unwrap(),
                     flags: 0x5.into(),
                 },
-            ),
-            (
-                "item2".to_string(),
-                super::IndexEntry {
+            },
+            IndexEntry {
+                name: "item2".to_string(),
+                meta: IndexMeta {
                     ctime: 0x5e9bf1c9.into(),
                     ctime_ns: 0xb204508.into(),
                     mtime: 0x5e9bf1d2.into(),
@@ -418,7 +459,7 @@ mod tests {
                     id: super::Id::from("0bfeb48f6e414e435fe4fbf1d85d5a3a83dd4251").unwrap(),
                     flags: 0x5.into(),
                 },
-            ),
+            },
         ];
 
         let mut idx_buf = Vec::new();
@@ -435,9 +476,9 @@ mod tests {
     #[ignore = "not yet implemented; need to add TREE extension first"]
     fn test_index_tree() {
         let index = vec![
-            (
-                "dir/item".to_string(),
-                super::IndexEntry {
+            IndexEntry {
+                name: "dir/item".to_string(),
+                meta: IndexMeta {
                     ctime: 0x5e9bc19e.into(),
                     ctime_ns: 0x217b3358.into(),
                     mtime: 0x5e9bc19e.into(),
@@ -451,10 +492,10 @@ mod tests {
                     id: super::Id::from("c2801012ebf8905049b7555a8e1a32fb2df68a8f").unwrap(),
                     flags: 0x8.into(),
                 },
-            ),
-            (
-                "file2".to_string(),
-                super::IndexEntry {
+            },
+            IndexEntry {
+                name: "file2".to_string(),
+                meta: IndexMeta {
                     ctime: 0x5e9bbee2.into(),
                     ctime_ns: 0x1b0f3be0.into(),
                     mtime: 0x5e9bbee2.into(),
@@ -468,7 +509,7 @@ mod tests {
                     id: super::Id::from("107f41d5f9e9ea48ff6a312917c9bb029cf9d2b6").unwrap(),
                     flags: 0x5.into(),
                 },
-            ),
+            },
         ];
 
         let mut idx_buf = Vec::new();

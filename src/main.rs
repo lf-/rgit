@@ -1,3 +1,4 @@
+#![feature(is_sorted)]
 mod args;
 mod commands;
 mod index;
@@ -21,6 +22,7 @@ fn do_main(opts: args::Opts) -> Result<()> {
         SubCommand::Add(a) => commands::add(a.files),
         SubCommand::Commit(c) => commands::commit(c.who, c.message),
         SubCommand::Init => commands::init(),
+        SubCommand::Status => commands::status(),
 
         SubCommand::CatFile(cf) => commands::catfile(&cf.git_ref, cf.output),
         SubCommand::CommitTree(c) => {

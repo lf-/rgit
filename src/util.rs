@@ -26,7 +26,8 @@ impl GitPath for Path {
     }
 }
 
-/// Prints a bytes string that may contain invalid UTF-8 in escaped format
+/// Prints a bytes string with all non-ascii characters in escaped format
+#[allow(unused)]
 pub(crate) fn to_bytes_literal(s: &[u8]) -> String {
     let mut res = String::new();
     for &c in s {
