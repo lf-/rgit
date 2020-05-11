@@ -1,3 +1,4 @@
+//! Helpers for simplifying commonly-used patterns in Git
 use std::ascii;
 use std::path::Path;
 

@@ -1,3 +1,4 @@
+//! A module to handle the on-disk storage of Git objects in a database
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, FixedOffset};
 use flate2::bufread::ZlibDecoder;
@@ -21,6 +22,7 @@ fn open_compressed(path: &Path) -> Result<impl Read> {
     Ok(decoder)
 }
 
+/// A Git on-disk object
 pub trait GitObject {
     /// Encodes an object for storage.
     fn encode(&self) -> Vec<u8>;
@@ -30,53 +32,83 @@ pub trait GitObject {
     fn tag(&self) -> Vec<u8>;
 }
 
+/// The hash-based ID of a Git object. Can be used to find it on disk.
 #[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Id([u8; 20]);
 
+/// A repository, specifically, a .git directory
 pub struct Repo {
     /// path to the root of the .git directory
     pub root: PathBuf,
 }
 
+/// Parsed Author/Committer field on a commit
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NameEntry {
+    /// Name of the author
     pub name: String,
+    /// Email address (addr@example.com)
     pub email: String,
+    /// Time in a local time zone
     pub time: DateTime<FixedOffset>,
 }
 
+/// An in-memory commit
 #[derive(Debug, PartialEq, Eq)]
 pub struct Commit {
+    /// Id of the tree at this commit
     pub tree: Id,
+    /// List of parents. Usually has one entry but may be zero in the case of a
+    /// base commit or multiple in case of a merge
     pub parents: Vec<Id>,
+    /// Author of this commit
     pub author: NameEntry,
+    /// Committer. Usually the same as the author but can be different in
+    /// projects where collaboration is done by email
     pub committer: NameEntry,
+    /// Commit message
     pub message: String,
 }
 
+/// A file or directory in a Tree
 #[derive(Debug, PartialEq, Eq)]
 pub struct File {
+    /// Mode of the file. Example: 0o100644. Only 644 and 755 are permitted. The
+    /// leading bits are git attributes related to symbolic links and other
+    /// special files. Normal files have a leading 0o100 and Unix permissions
+    /// depending on if they are executable. Directories have mode 0o040000
     pub mode: u32,
-    // opinion: this is UTF-8 encoded. cgit doesn't care however
+    /// UTF-8 encoded file name
     pub name: String,
+    /// Id referencing the blob backing this file
     pub id: Id,
 }
 
+/// In-memory tree. This is a Merkle tree of the actual filesystem tree where
+/// every directory is represented as a File object containing its entire
+/// subtree of arbitrary depth.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Tree {
+    /// List of files/subtrees in this tree
     pub files: Vec<File>,
 }
 
+/// In-memory blob object. It's just a vector of bytes.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Blob {
+    /// Bytes of the represented blob
     content: Vec<u8>,
 }
 
+/// One of the object types resulting from loading an object from disk.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Object {
+    /// A Tree of blobs and subtrees
     Tree(Tree),
+    /// A blob (ordinary file)
     Blob(Blob),
+    /// A commit with associated tree, message and author/committer
     Commit(Commit),
 }
 
@@ -112,6 +144,7 @@ impl Repo {
         Ok(Repo { root: root.into() })
     }
 
+    /// Get the path in the .git directory to access a given file.
     pub fn path_for_object(&self, id: &Id) -> PathBuf {
         let id = format!("{}", id);
         let mut path = self.root.clone();
@@ -137,6 +170,7 @@ impl Repo {
         Ok(Id::from(id_s.trim()))
     }
 
+    /// Set the HEAD pointer to a new value
     pub fn set_head(&self, new_head: &Id) -> Result<()> {
         let id_s = format!("{}", new_head);
         fs::write(self.head_path(), id_s).context("hecked up setting head")
@@ -226,7 +260,10 @@ impl Repo {
         index::parse(reader)
     }
 
+    /// Write an in-memory index to the index file for this repository. Handles
+    /// file IO for you.
     pub fn write_index(&self, new_index: &index::Index) -> Result<()> {
+        // TODO: do this safely with no races
         let indexfile = self.root.join("index");
         let file = fs::OpenOptions::new()
             .write(true)
@@ -249,6 +286,8 @@ fn test_path_for_object() {
 }
 
 impl NameEntry {
+    /// Parse a string into a NameEntry. Fallible in the case of invalid
+    /// NameEntries.
     pub fn from(s: &str) -> Option<NameEntry> {
         // format: NAME <EMAIL> 12345 -0900
         let mut iter = s.rsplitn(3, ' ');
@@ -262,6 +301,7 @@ impl NameEntry {
         Self::with_time(iter.next()?, time)
     }
 
+    /// Create a new NameEntry from a name/email part and a time
     pub fn with_time(s: &str, time: DateTime<FixedOffset>) -> Option<NameEntry> {
         let mut iter = s.rsplitn(2, ' ');
 
@@ -277,7 +317,8 @@ impl NameEntry {
         })
     }
 
-    fn encode(&self) -> Vec<u8> {
+    /// Turns a NameEntry into a byte-string, appropriate for storage.
+    pub fn encode(&self) -> Vec<u8> {
         let time = self.time.format("%s %z");
         format!("{} <{}> {}", self.name, self.email, time).into_bytes()
     }
@@ -353,6 +394,7 @@ fn test_id_as_hex() {
 }
 
 impl Blob {
+    /// Creates a new in-memory Blob object, ready to store
     pub fn load(content: &[u8]) -> Result<Box<Blob>> {
         // it is probably a bad idea to copy the full file content into memory
         // for no reason
@@ -373,6 +415,7 @@ impl GitObject for Blob {
 }
 
 impl Blob {
+    /// Loads a file from disk and turns it into a Blob
     pub fn new_from_disk(path: &Path) -> Result<Blob> {
         Ok(Blob {
             content: fs::read(path)
@@ -382,6 +425,7 @@ impl Blob {
 }
 
 impl File {
+    /// Is this File a directory?
     pub fn is_dir(&self) -> bool {
         // XXX: refactor: we should store these as enums since they actually
         // just encode object type and executable status
@@ -505,6 +549,7 @@ fn test_tree_parsing() {
 }
 
 impl Commit {
+    /// Parses a commit from on-disk representation
     pub fn load(content: &[u8]) -> Result<Box<Commit>> {
         let content = content.to_vec();
         let mut slice = content.as_slice();
@@ -612,6 +657,8 @@ fn test_commit_parse_encode() {
 
 impl Object {
     fn parse(buf: Vec<u8>) -> Result<Object> {
+        // TODO: This function copies the entire object in order to pull the
+        // header off of it, which could be very suboptimal for large blobs.
         let mut split = buf.splitn(2, |&e| e == 0x00);
         let header = split.next().context(format!("Malformed object file"))?;
 

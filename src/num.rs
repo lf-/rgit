@@ -1,3 +1,4 @@
+//! Functions for working with numeric types
 fn _decode_hex_digit(d: u8) -> Option<u8> {
     match d {
         b'0'..=b'9' => Some(d - b'0'),

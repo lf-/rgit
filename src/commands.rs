@@ -18,6 +18,7 @@ use crate::tree::{
 use crate::util::GitPath;
 use index::IndexEntry;
 
+/// initialize a repo in the working directory
 pub(crate) fn init() -> Result<()> {
     if Repo::new().is_some() {
         // technically this stops us from making a repo inside a repo but that
@@ -31,6 +32,7 @@ pub(crate) fn init() -> Result<()> {
     Ok(())
 }
 
+/// add files to the index
 pub(crate) fn add(files: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
     let mut my_index = repo.index()?;
@@ -66,6 +68,7 @@ pub(crate) fn add(files: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// commit the changes staged in the index
 pub(crate) fn commit(who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
@@ -74,6 +77,7 @@ pub(crate) fn commit(who: String, message: String) -> Result<()> {
     commit_tree(id, who, message)
 }
 
+/// get the changes between the working directory ~ index and the index ~ HEAD
 pub(crate) fn status() -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
@@ -91,7 +95,7 @@ pub(crate) fn status() -> Result<()> {
         _ => return Err(anyhow!("commit tree was not a tree")),
     };
 
-    // Optimization: use the cached subtree extension
+    // Future optimization: use the cached subtree extension
     let mut head_filelist = Vec::new();
     load_tree_from_disk(head_tree, &repo, "", &mut head_filelist)?;
 
@@ -129,7 +133,6 @@ pub(crate) fn status() -> Result<()> {
         println!("~ {}", f.name);
     }
 
-    // Look for new files
     Ok(())
 }
 
@@ -137,6 +140,7 @@ pub(crate) fn status() -> Result<()> {
 // Plumbing Commands
 // -----------------------------------------
 
+/// makes a commit of a tree
 pub(crate) fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("couldn't find repo")?;
     if !repo.has_id(&id) {
@@ -186,10 +190,6 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
         }
     }
 
-    // this is canonicalized because Windows puts a \\?\ before the path when
-    // `.canonicalize()` is called which gets caught in the machinery of
-    // strip_prefix, so we ensure the thing we're stripping also has the same
-    // artifact
     let mut tree = TreeEntry::SubTree(SubTree::new());
 
     for &path in &paths {
@@ -231,6 +231,7 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// dumps the content of an object in the database for debugging purposes
 pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
     let id = Id::from(id).context("invalid ID format")?;
     let repo = Repo::new().context("failed to find repo")?;
@@ -255,6 +256,7 @@ pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
     Ok(())
 }
 
+/// parses and prints various objects in debug format
 pub(crate) fn debug(what: args::DebugType) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 

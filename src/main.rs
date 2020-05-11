@@ -1,11 +1,13 @@
+//! A Git implementation in Rust, mostly for fun
 #![feature(is_sorted)]
+#![deny(missing_docs, unused_qualifications)]
 mod args;
 mod commands;
-mod index;
-mod num;
-mod objects;
-mod tree;
-mod util;
+pub mod index;
+pub mod num;
+pub mod objects;
+pub mod tree;
+pub mod util;
 
 use anyhow::{Context, Result};
 use args::SubCommand;

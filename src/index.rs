@@ -17,15 +17,20 @@ const VERSION: u32 = 2;
 /// Files indexed in this index. Must be kept sorted.
 pub type Index = Vec<IndexEntry>;
 
+/// Errors that can be returned by working with an index
 #[derive(Error, Debug)]
 pub enum IndexError {
+    /// Index version in header is not one we are compatible with
     #[error("Unsupported index version {0}")]
     UnsupportedVersion(u32),
 
+    /// The magic bytes at the top of the header are wrong
     #[error("Bad header magic")]
     BadMagic,
 }
 
+/// Big endian u32 with From/Into to normal u32. Used for casting index data
+/// in-place
 #[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 #[allow(non_camel_case_types)]
@@ -50,6 +55,8 @@ impl fmt::Debug for u32be {
     }
 }
 
+/// Big endian u16 with From/Into to normal u16. Used for casting index data
+/// in-place
 #[derive(Safecast, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 #[allow(non_camel_case_types)]
@@ -91,20 +98,29 @@ struct Header {
 /// order: sorted in ascending order on name field, sorted in byte comparison order
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
+    /// Filename represented
     pub name: String,
+    /// Filesytem metadata
     pub meta: IndexMeta,
 }
 
+/// Metadata on an index entry
 #[derive(Safecast, Clone, PartialEq, Eq, Debug)]
 #[repr(C)]
 pub struct IndexMeta {
+    /// Creation time
     pub ctime: u32be,
+    /// Creation time, nanosecond component
     pub ctime_ns: u32be,
 
+    /// Modification time
     pub mtime: u32be,
+    /// Modification time, nanosecond component
     pub mtime_ns: u32be,
 
+    /// Device number (unused on Windows)
     pub dev: u32be,
+    /// inode number (unused on Windows)
     pub ino: u32be,
 
     /// \[31:16\] unused, left zero; unaccounted for in docs (?????)
@@ -114,11 +130,15 @@ pub struct IndexMeta {
     /// \[8:0\] unix permission: 0o0755 or 0o0644 for files, symlinks are 0
     pub mode: u32be,
 
+    /// Unix uid of the file (unused on Windows)
     pub uid: u32be,
+    /// Unix gid of the file (unused on Windows)
     pub gid: u32be,
 
+    /// Size of the file in bytes
     pub size: u32be,
 
+    /// Id of the file in the database
     pub id: Id,
 
     /// \[16\] assume-valid flag
@@ -135,20 +155,32 @@ pub struct IndexMeta {
     // eflags: u16be,
 }
 
+/// Information from filesystem stat operations
 #[derive(Debug, PartialEq)]
 pub struct StatInfo {
+    /// (sec, nsec) tuple of metadata change time
     pub ctime: (u32, u32),
+    /// (sec, nsec) tuple of modification time
     pub mtime: (u32, u32),
+    /// Size in bytes
     pub size: u32,
+    /// Unix-specific stat entries. These are zero and ignored on Windows.
     pub unix_stat: UnixStat,
 }
 
+/// Unix-specific stat information of an index entry. This is zeroed on Windows,
+/// and zeroed entries are ignored regardless of OS
 #[derive(Debug, Default)]
 pub struct UnixStat {
+    /// Device number
     pub dev: u32,
+    /// inode number
     pub ino: u32,
+    /// Numeric uid
     pub uid: u32,
+    /// Numeric gid
     pub gid: u32,
+    /// Is the file executable?
     pub executable: bool,
 }
 
@@ -260,6 +292,7 @@ impl IndexMeta {
         })
     }
 
+    /// Gets the statinfo of an index entry for use in comparisons
     pub fn statinfo(&self) -> StatInfo {
         StatInfo {
             ctime: (self.ctime.into(), self.ctime_ns.into()),
@@ -314,6 +347,7 @@ pub fn add_to_index(index: &mut Index, filename: &str, repo: &Repo) -> Result<Id
     })
 }
 
+/// Write out an index to the given Write-implementing object such as a file
 pub fn write_to_file(index: &Index, mut file: impl io::Write) -> Result<()> {
     let mut hash = Sha1::new();
     let header = Header {

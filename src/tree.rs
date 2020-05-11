@@ -8,23 +8,32 @@ use thiserror::Error;
 use crate::index::{Index, IndexEntry};
 use crate::objects::{File, Id, Object, Repo, Tree};
 
+/// Errors that can arise when working with a tree
 #[derive(Error, Debug)]
 pub enum TreeError {
+    /// Id in the tree was the wrong object type (e.g. a Blob in place of a Tree)
     #[error("Got an ID {0} that was not for the expected object type")]
     BadId(Id),
 }
 
+/// A structure representing a level of a Git tree, with some parts in memory and
+/// some parts in the database
 pub type SubTree = BTreeMap<String, TreeEntry>;
 
 /// A recursive tree structure based on BTreeMap to represent a repository tree
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum TreeEntry {
+    /// Reference to a Blob stored in the database
     Blob(Id),
+    /// Reference to a Tree stored in the database
     Tree(Id),
+    /// A tree in memory that could be stored in the database if it has no
+    /// further SubTrees inside it
     SubTree(SubTree),
 }
 
 impl TreeEntry {
+    /// Get a mutable reference to this TreeEntry if it is a SubTree
     pub fn subtree_mut(&mut self) -> Option<&mut SubTree> {
         if let TreeEntry::SubTree(st) = self {
             Some(st)
@@ -32,6 +41,7 @@ impl TreeEntry {
             None
         }
     }
+    /// Get a reference to this TreeEntry if it is a SubTree
     pub fn subtree(&self) -> Option<&SubTree> {
         if let TreeEntry::SubTree(st) = self {
             Some(st)
@@ -55,12 +65,17 @@ impl TreeEntry {
 #[derive(Debug, PartialEq, Eq)]
 /// A type to represent differences between two trees
 pub enum Diff {
+    /// The entry has different content
     Different,
+    /// This name is only in the right side
     ExtraInRight,
+    /// This name is only in the left side
     ExtraInLeft,
 }
 
-/// Finds the differences between two flat, sorted file lists
+/// Finds the differences between two flat, sorted file lists. Takes a comparator
+/// function to compare the two Ts. This allows avoiding copying or
+/// double-iteration if the thing to be compared is inside the T.
 pub fn diff_file_lists<'a, 'b, T, F>(
     left: &[(&'a str, &'b T)],
     right: &[(&'a str, &'b T)],
