@@ -3,6 +3,7 @@
 #![deny(missing_docs, unused_qualifications)]
 mod args;
 mod commands;
+mod diff;
 pub mod index;
 pub mod num;
 pub mod objects;
@@ -23,9 +24,10 @@ fn do_main(opts: args::Opts) -> Result<()> {
     match opts.subcmd {
         SubCommand::Add(a) => commands::add(a.files),
         SubCommand::Commit(c) => commands::commit(c.who, c.message),
+        //SubCommand::Diff(d) => commands::diff(d),
         SubCommand::Init => commands::init(),
         SubCommand::Status => commands::status(),
-
+        // plumbing
         SubCommand::CatFile(cf) => commands::catfile(&cf.git_ref, cf.output),
         SubCommand::CommitTree(c) => {
             let id = Id::from(&c.id).context("invalid ID format")?;

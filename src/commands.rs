@@ -112,9 +112,12 @@ pub(crate) fn status() -> Result<()> {
     let diffs = diff_file_lists(&diff_head, &diff_index, |a, b| a == b);
 
     let sigil = |d| match d {
+        // change in index
         Diff::Different => "~",
-        Diff::ExtraInLeft => "+",
-        Diff::ExtraInRight => "-",
+        // missing from index (deleted vs HEAD)
+        Diff::ExtraInLeft => "-",
+        // missing from HEAD (new in index)
+        Diff::ExtraInRight => "+",
     };
 
     println!("Changes to commit:");
@@ -269,6 +272,9 @@ pub(crate) fn debug(what: args::DebugType) -> Result<()> {
                 .open(indexfile)
                 .context("failed opening index file")?;
             println!("{:#x?}", index::parse(BufReader::new(h))?);
+        }
+        args::DebugType::Test => {
+            // a debug entry point
         }
     }
     Ok(())

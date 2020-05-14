@@ -19,6 +19,9 @@ pub(crate) enum SubCommand {
     /// 🔃 commits the tree state in the index
     Commit(Commit),
 
+    /// 🆎 diffs blobs and commits
+    //Diff(Diff),
+
     /// ✨ makes a new repo
     Init,
 
@@ -109,6 +112,9 @@ pub(crate) struct Debug {
 
 arg_enum! {
 pub enum DebugType {
-    Index
+    // Dump debug info on the index
+    Index,
+    // Run a testing entry point
+    Test
 }
 }

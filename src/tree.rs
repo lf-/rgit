@@ -85,6 +85,9 @@ where
     T: Eq,
     F: Fn(&'b T, &'b T) -> bool,
 {
+    // TODO: modify this so we can *actually* avoid double-iteration. I think it
+    // needs to handle different types of 'left' and 'right'.
+
     // lists MUST be sorted, check this invariant before we make mistakes
     assert!(
         left.is_sorted_by_key(|&(name, _)| name) && right.is_sorted_by_key(|&(name, _)| name),
