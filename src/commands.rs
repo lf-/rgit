@@ -12,6 +12,7 @@ use crate::args;
 use crate::args::OutputType;
 use crate::index;
 use crate::objects::{Blob, Commit, Id, NameEntry, Object, Repo};
+use crate::rev;
 use crate::tree::{
     diff_file_lists, index_to_tree, load_tree_from_disk, save_subtree, Diff, SubTree, TreeEntry,
 };
@@ -19,7 +20,7 @@ use crate::util::GitPath;
 use index::IndexEntry;
 
 /// initialize a repo in the working directory
-pub(crate) fn init() -> Result<()> {
+pub fn init() -> Result<()> {
     if Repo::new().is_some() {
         // technically this stops us from making a repo inside a repo but that
         // is also probably a bad idea to do
@@ -33,7 +34,7 @@ pub(crate) fn init() -> Result<()> {
 }
 
 /// add files to the index
-pub(crate) fn add(files: Vec<String>) -> Result<()> {
+pub fn add(files: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
     let mut my_index = repo.index()?;
 
@@ -69,7 +70,7 @@ pub(crate) fn add(files: Vec<String>) -> Result<()> {
 }
 
 /// commit the changes staged in the index
-pub(crate) fn commit(who: String, message: String) -> Result<()> {
+pub fn commit(who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
     let index_tree = index_to_tree(&repo.index()?);
@@ -77,8 +78,14 @@ pub(crate) fn commit(who: String, message: String) -> Result<()> {
     commit_tree(id, who, message)
 }
 
+/// diff two references.
+pub fn diff(ref_a: String, ref_b: String) {
+    // we need to actually have reference support for this since we need to name
+    // them in the output
+}
+
 /// get the changes between the working directory ~ index and the index ~ HEAD
-pub(crate) fn status() -> Result<()> {
+pub fn status() -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
     let head = repo
@@ -144,7 +151,7 @@ pub(crate) fn status() -> Result<()> {
 // -----------------------------------------
 
 /// makes a commit of a tree
-pub(crate) fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
+pub fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
     let repo = Repo::new().context("couldn't find repo")?;
     if !repo.has_id(&id) {
         return Err(anyhow!("given ID does not exist in the database"));
@@ -182,7 +189,7 @@ pub(crate) fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
 }
 
 /// Create a new tree object, ready to commit.
-pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
+pub fn new_tree(paths: Vec<String>) -> Result<()> {
     let repo = Repo::new().context("failed to find .git")?;
     let paths = paths.iter().map(|p| Path::new(p)).collect::<Vec<&Path>>();
     for &path in &paths {
@@ -235,7 +242,7 @@ pub(crate) fn new_tree(paths: Vec<String>) -> Result<()> {
 }
 
 /// dumps the content of an object in the database for debugging purposes
-pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
+pub fn catfile(id: &str, output: OutputType) -> Result<()> {
     let id = Id::from(id).context("invalid ID format")?;
     let repo = Repo::new().context("failed to find repo")?;
     let mut h = repo.open_object_raw(&id)?;
@@ -260,7 +267,7 @@ pub(crate) fn catfile(id: &str, output: OutputType) -> Result<()> {
 }
 
 /// parses and prints various objects in debug format
-pub(crate) fn debug(what: args::DebugType) -> Result<()> {
+pub fn debug(what: args::DebugType) -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
     match what {
@@ -277,5 +284,11 @@ pub(crate) fn debug(what: args::DebugType) -> Result<()> {
             // a debug entry point
         }
     }
+    Ok(())
+}
+
+pub fn rev_parse(find_rev: String) -> Result<()> {
+    let repo = Repo::new().context("Failed to find the repo")?;
+    println!("{}", rev::parse(&find_rev, &repo)?);
     Ok(())
 }

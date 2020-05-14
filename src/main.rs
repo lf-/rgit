@@ -1,5 +1,6 @@
 //! A Git implementation in Rust, mostly for fun
 #![feature(is_sorted)]
+#![feature(bool_to_option)]
 #![deny(missing_docs, unused_qualifications)]
 mod args;
 mod commands;
@@ -7,6 +8,7 @@ mod diff;
 pub mod index;
 pub mod num;
 pub mod objects;
+pub mod rev;
 pub mod tree;
 pub mod util;
 
@@ -35,6 +37,7 @@ fn do_main(opts: args::Opts) -> Result<()> {
         }
         SubCommand::Debug(ty) => commands::debug(ty.what),
         SubCommand::NewTree(m) => commands::new_tree(m.paths),
+        SubCommand::RevParse(r) => commands::rev_parse(r.rev),
     }
 }
 
