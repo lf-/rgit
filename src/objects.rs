@@ -710,6 +710,30 @@ impl Object {
 
         (id, squished)
     }
+
+    /// Turns an Object into a Tree or nothing
+    pub fn tree(self) -> Option<Tree> {
+        match self {
+            Object::Tree(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Turns an Object into a Commit or nothing
+    pub fn commit(self) -> Option<Commit> {
+        match self {
+            Object::Commit(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Turns an Object into a Blob or nothing
+    pub fn blob(self) -> Option<Blob> {
+        match self {
+            Object::Blob(b) => Some(b),
+            _ => None,
+        }
+    }
 }
 
 #[test]

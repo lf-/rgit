@@ -73,34 +73,23 @@ pub enum Diff {
     ExtraInLeft,
 }
 
-/// Finds the differences between two flat, sorted file lists. Takes a comparator
-/// function to compare the two Ts. This allows avoiding copying or
+/// Finds the differences between two flat, sorted file list iterators. Caller is
+/// expected to ensure they are sorted to avoid unexpected results. Takes a
+/// comparator function to compare the two Ts. This allows avoiding copying or
 /// double-iteration if the thing to be compared is inside the T.
-pub fn diff_file_lists<'a, 'b, T, F>(
-    left: &[(&'a str, &'b T)],
-    right: &[(&'a str, &'b T)],
+pub fn diff_file_lists<'a, 'b, A, B, F>(
+    left: &mut dyn Iterator<Item = (&'a str, &'b A)>,
+    right: &mut dyn Iterator<Item = (&'a str, &'b B)>,
     comparator: F,
 ) -> Vec<(&'a str, Diff)>
 where
-    T: Eq,
-    F: Fn(&'b T, &'b T) -> bool,
+    F: Fn(&'b A, &'b B) -> bool,
 {
-    // TODO: modify this so we can *actually* avoid double-iteration. I think it
-    // needs to handle different types of 'left' and 'right'.
-
-    // lists MUST be sorted, check this invariant before we make mistakes
-    assert!(
-        left.is_sorted_by_key(|&(name, _)| name) && right.is_sorted_by_key(|&(name, _)| name),
-        "Input MUST be sorted"
-    );
-
     let mut diffs = Vec::new();
 
-    let mut liter = left.iter();
-    let mut riter = right.iter();
+    let mut lnext = left.next();
+    let mut rnext = right.next();
 
-    let mut lnext = liter.next();
-    let mut rnext = riter.next();
     // loop through both left and right structures at once
     loop {
         match (lnext, rnext) {
@@ -111,15 +100,15 @@ where
             // A A
             // - B
             (None, Some((r, _))) => {
-                diffs.push((*r, Diff::ExtraInRight));
-                rnext = riter.next();
+                diffs.push((r, Diff::ExtraInRight));
+                rnext = right.next();
             }
 
             // A A
             // B -
             (Some((l, _)), None) => {
                 diffs.push((l, Diff::ExtraInLeft));
-                lnext = liter.next();
+                lnext = left.next();
             }
 
             // A:1 A:1
@@ -129,16 +118,16 @@ where
                     // A:1 A:1
                     // B:2 B:2
                     Ordering::Equal if comparator(li, ri) => {
-                        lnext = liter.next();
-                        rnext = riter.next();
+                        lnext = left.next();
+                        rnext = right.next();
                     }
 
                     // A:1 A:1
                     // B:2 B:3
                     Ordering::Equal => {
                         diffs.push((l, Diff::Different));
-                        lnext = liter.next();
-                        rnext = riter.next();
+                        lnext = left.next();
+                        rnext = right.next();
                     }
 
                     // A:1 A:1
@@ -146,7 +135,7 @@ where
                     Ordering::Less => {
                         diffs.push((l, Diff::ExtraInLeft));
                         // catch up
-                        lnext = liter.next();
+                        lnext = left.next();
                     }
 
                     // A:1 A:1
@@ -154,7 +143,7 @@ where
                     Ordering::Greater => {
                         diffs.push((r, Diff::ExtraInRight));
                         // catch up
-                        rnext = riter.next();
+                        rnext = right.next();
                     }
                 }
             }
@@ -290,19 +279,31 @@ mod test {
         tree1.push(("a", &id1));
         tree2.push(("a", &id2));
         let identical = tree1.clone();
-        let diffs = super::diff_file_lists(&tree1, &identical, comparator);
+        let diffs = super::diff_file_lists(
+            &mut tree1.iter().cloned(),
+            &mut identical.iter().cloned(),
+            comparator,
+        );
 
         // identical trees should not have any diff output
         assert_eq!(diffs.len(), 0);
 
-        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+        let diffs = super::diff_file_lists(
+            &mut tree1.iter().cloned(),
+            &mut tree2.iter().cloned(),
+            comparator,
+        );
 
         // 'a' should be different
         assert_eq!(diffs, vec![("a", Diff::Different)]);
 
         // an extra item in left
         tree1.push(("b", &id1));
-        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+        let diffs = super::diff_file_lists(
+            &mut tree1.iter().cloned(),
+            &mut tree2.iter().cloned(),
+            comparator,
+        );
         assert_eq!(
             diffs,
             vec![("a", Diff::Different), ("b", Diff::ExtraInLeft)]
@@ -315,7 +316,11 @@ mod test {
         // we only accept sorted trees
         tree1.sort_by_key(|&(name, _)| name);
         println!("tree 1: {:?}\ntree 2: {:?}", &tree1, &tree2);
-        let diffs = super::diff_file_lists(&tree1, &tree2, comparator);
+        let diffs = super::diff_file_lists(
+            &mut tree1.iter().cloned(),
+            &mut tree2.iter().cloned(),
+            comparator,
+        );
         assert_eq!(
             diffs,
             vec![

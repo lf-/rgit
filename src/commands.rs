@@ -106,17 +106,16 @@ pub fn status() -> Result<()> {
     let mut head_filelist = Vec::new();
     load_tree_from_disk(head_tree, &repo, "", &mut head_filelist)?;
 
-    let diff_head: Vec<_> = head_filelist
+    let mut diff_head = head_filelist
         .iter()
-        .map(|(ref name, ref id)| (name.as_str(), id))
-        .collect();
+        .map(|(ref name, ref id)| (name.as_str(), id));
 
     let index_filelist = repo.index()?;
-    let diff_index: Vec<_> = index_filelist
+    let mut diff_index = index_filelist
         .iter()
-        .map(|IndexEntry { ref name, meta: ie }| (name.as_str(), &ie.id))
-        .collect();
-    let diffs = diff_file_lists(&diff_head, &diff_index, |a, b| a == b);
+        .map(|IndexEntry { ref name, meta: ie }| (name.as_str(), &ie.id));
+
+    let diffs = diff_file_lists(&mut diff_head, &mut diff_index, |a, b| a == b);
 
     let sigil = |d| match d {
         // change in index
