@@ -55,8 +55,15 @@ pub fn add(files: Vec<String>) -> Result<()> {
             let path = repo.repo_relative(f.path())?;
 
             let path = path.to_git_path();
+            if path.is_none() {
+                warn!(
+                    "Skipping adding {:?} because it contains invalid UTF-8",
+                    f.path()
+                );
+                continue 'inner;
+            }
+            let path = path.unwrap();
 
-            debug!("adding {}", path);
             index::add_to_index(&mut my_index, &path, &repo)?;
         }
     }
@@ -79,18 +86,44 @@ pub fn commit(who: String, message: String) -> Result<()> {
 }
 
 /// diff two references.
-pub fn diff(ref_a: String, ref_b: String) {
-    // we need to actually have reference support for this since we need to name
-    // them in the output
+pub fn diff(ref_a: String, ref_b: String) -> Result<()> {
+    let repo = Repo::new().context("failed to find git repo")?;
+
+    let id_a = rev::parse(&ref_a, &repo).context("Finding A reference")?;
+    let id_b = rev::parse(&ref_b, &repo).context("Finding B reference")?;
+
+    let tree_a = repo
+        .open(&id_a)
+        .context("Opening tree A")?
+        .commit()
+        .with_context(|| format!("Tree A ref {} did not point to a commit", &ref_a))?
+        .tree;
+    let tree_a = repo
+        .open(&tree_a)
+        .context("Opening tree A")?
+        .tree()
+        .context("Tree A is not a tree")?;
+
+    let tree_b = repo
+        .open(&id_b)
+        .context("Opening tree B")?
+        .commit()
+        .with_context(|| format!("Tree B ref {} did not point to a commit", &ref_b))?
+        .tree;
+    let tree_b = repo
+        .open(&tree_b)
+        .context("Opening tree B")?
+        .tree()
+        .context("Tree B is not a tree")?;
+
+    Ok(())
 }
 
 /// get the changes between the working directory ~ index and the index ~ HEAD
 pub fn status() -> Result<()> {
     let repo = Repo::new().context("failed to find repo")?;
 
-    let head = repo
-        .head()?
-        .context("Repo does not have a HEAD. You can commit to create one.")?;
+    let head = repo.head()?;
 
     let cmt = match repo.open(&head)? {
         Object::Commit(cmt) => cmt,
@@ -168,7 +201,7 @@ pub fn commit_tree(id: Id, who: String, message: String) -> Result<()> {
     let who = NameEntry::with_time(&who, time).context("invalid `who`")?;
 
     let mut parents = Vec::new();
-    if let Some(head) = repo.head()? {
+    if let Ok(head) = repo.head() {
         parents.push(head);
     }
 
@@ -289,5 +322,14 @@ pub fn debug(what: args::DebugType) -> Result<()> {
 pub fn rev_parse(find_rev: String) -> Result<()> {
     let repo = Repo::new().context("Failed to find the repo")?;
     println!("{}", rev::parse(&find_rev, &repo)?);
+    Ok(())
+}
+
+/// Like git update-ref if it was really badly coded and evil.
+/// Your Repo May Vary.
+pub fn update_ref(target: String, new_id: String) -> Result<()> {
+    let repo = Repo::new().context("Failed to find the repo")?;
+    let new_id = rev::parse(&new_id, &repo)?;
+    rev::update_ref(Path::new(&target), &new_id, &repo.root)?;
     Ok(())
 }

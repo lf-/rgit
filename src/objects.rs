@@ -15,6 +15,7 @@ use std::str;
 
 use crate::index;
 use crate::num;
+use crate::rev;
 
 fn open_compressed(path: &Path) -> Result<impl Read> {
     let file = fs::File::open(path).context("Failed to open compressed file")?;
@@ -159,21 +160,15 @@ impl Repo {
         open_compressed(&self.path_for_object(id))
     }
 
-    fn head_path(&self) -> PathBuf {
-        self.root.as_path().join("HEAD")
-    }
-
     /// Gets the current value of the HEAD pointer
-    /// It can validly be None
-    pub fn head(&self) -> Result<Option<Id>> {
-        let id_s = fs::read_to_string(self.head_path())?;
-        Ok(Id::from(id_s.trim()))
+    pub fn head(&self) -> Result<Id> {
+        rev::parse("HEAD", self)
     }
 
     /// Set the HEAD pointer to a new value
     pub fn set_head(&self, new_head: &Id) -> Result<()> {
-        let id_s = format!("{}", new_head);
-        fs::write(self.head_path(), id_s).context("hecked up setting head")
+        // Find where the HEAD pointer points then check that one.
+        rev::update_ref(Path::new("HEAD"), new_head, &self.root)
     }
 
     /// Checks if this Id is in the database

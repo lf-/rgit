@@ -12,18 +12,21 @@ pub trait GitPath {
     ///
     /// Note that there is one known inconsistency with this: on Unix platforms,
     /// lone continuation bytes in filenames are tolerated by Git (?????) in
-    /// spite of being invalid UTF-8. We choose deliberately to ignore this
-    /// and just put U+FFFD REPLACEMENT CHARACTERs instead of any illegal
-    /// characters.
+    /// spite of being invalid UTF-8. We reject all paths that contain these,
+    /// which is a calculated incompatibility with C git.
     ///
     /// This function copies the path into a new String.
-    fn to_git_path(&self) -> String;
+    fn to_git_path(&self) -> Option<String>;
 }
 
 impl GitPath for Path {
-    fn to_git_path(&self) -> String {
-        let parts: Vec<_> = self.iter().map(|comp| comp.to_string_lossy()).collect();
-        parts.join("/")
+    fn to_git_path(&self) -> Option<String> {
+        // OsStr is too opaque to directly replace the slashes :(
+        let mut parts = Vec::new();
+        for part in self.iter() {
+            parts.push(part.to_str()?);
+        }
+        Some(parts.join("/"))
     }
 }
 
@@ -45,8 +48,8 @@ mod test {
     #[test]
     fn test_git_path() {
         let path = Path::new("a/b");
-        assert_eq!(path.to_git_path(), "a/b");
+        assert_eq!(path.to_git_path().unwrap(), "a/b");
         let path = Path::new("a");
-        assert_eq!(path.to_git_path(), "a");
+        assert_eq!(path.to_git_path().unwrap(), "a");
     }
 }

@@ -43,6 +43,9 @@ pub enum SubCommand {
 
     /// 🔎 matches the given reference to an id
     RevParse(RevParse),
+
+    /// 💥 updates a given reference to a value. Very unsafe.
+    UpdateRef(UpdateRef),
 }
 
 #[derive(Clap)]
@@ -128,4 +131,14 @@ pub struct RevParse {
     /// Revision to find
     #[clap(index = 1)]
     pub rev: String,
+}
+
+#[derive(Clap)]
+pub struct UpdateRef {
+    /// Target reference to update
+    #[clap(index = 1)]
+    pub target_ref: String,
+
+    #[clap(index = 2)]
+    pub new_id: String,
 }

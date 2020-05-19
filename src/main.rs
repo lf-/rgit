@@ -1,6 +1,6 @@
 //! A Git implementation in Rust, mostly for fun
 #![feature(is_sorted)]
-#![feature(bool_to_option)]
+#![feature(str_strip)]
 #![deny(missing_docs, unused_qualifications)]
 mod args;
 mod commands;
@@ -38,17 +38,20 @@ fn do_main(opts: args::Opts) -> Result<()> {
         SubCommand::Debug(ty) => commands::debug(ty.what),
         SubCommand::NewTree(m) => commands::new_tree(m.paths),
         SubCommand::RevParse(r) => commands::rev_parse(r.rev),
+        SubCommand::UpdateRef(ur) => commands::update_ref(ur.target_ref, ur.new_id),
     }
 }
 
 fn main() {
     let opts = args::Opts::parse();
 
+    let verbose = opts.verbose;
+
     const INFO: usize = 2;
     // always print INFO messages
     stderrlog::new()
         .module(module_path!())
-        .verbosity(opts.verbose + INFO)
+        .verbosity(verbose + INFO)
         .timestamp(stderrlog::Timestamp::Off)
         .init()
         .unwrap();
@@ -56,7 +59,11 @@ fn main() {
     match do_main(opts) {
         Ok(_) => (), // success
         Err(e) => {
-            eprintln!("Encountered error: {}", e);
+            if verbose < 1 {
+                eprintln!("Error: {:#}", e);
+            } else {
+                eprintln!("Error verbose: {:?}", e);
+            }
         }
     }
 }
