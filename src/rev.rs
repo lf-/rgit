@@ -27,8 +27,8 @@ pub enum RevError {
 
 /// check if a given string *could* be a SHA1
 fn is_valid_sha1(s: &str) -> bool {
-    // SHA1s must have 4-20 characters
-    (4..=20).contains(&s.len())
+    // SHA1s must have 4-40 characters
+    (4..=40).contains(&s.len())
         // SHA1s must be made of hex digits
         && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -221,7 +221,7 @@ pub fn update_ref(target_ref: &Path, new_id: &Id, dotgit: &Path) -> Result<()> {
         // TODO: safe replacement of the file
         debug!("overwriting reference, writing to {}", absolute.display());
         fs::write(dotgit.join(target), format!("{}", new_id))?;
-        return Ok(())
+        return Ok(());
     }
     // if we fail to find somewhere to put the ref, assume it is new and
     // goes in .git.
@@ -287,7 +287,7 @@ pub fn parse(rev: &str, repo: &Repo) -> Result<Id> {
                 if file
                     .file_name()
                     .to_str()
-                    .map(|name| name.starts_with(rev))
+                    .map(|name| name.starts_with(&rev[2..]))
                     .unwrap_or(false)
                 {
                     // already found a candidate, so this must be ambiguous
