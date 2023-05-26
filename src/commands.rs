@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, FixedOffset, Local};
 use std::ascii;
+use std::collections::HashMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::{BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::args;
@@ -14,7 +15,8 @@ use crate::index;
 use crate::objects::{Blob, Commit, Id, NameEntry, Object, Repo};
 use crate::rev;
 use crate::tree::{
-    diff_file_lists, index_to_tree, load_tree_from_disk, save_subtree, Diff, SubTree, TreeEntry,
+    diff_file_lists, diff_trees, index_to_tree, load_tree_from_disk, save_subtree, Diff, SubTree,
+    TreeEntry,
 };
 use crate::util::GitPath;
 use index::IndexEntry;
@@ -85,36 +87,102 @@ pub fn commit(who: String, message: String) -> Result<()> {
     commit_tree(id, who, message)
 }
 
+/// A Thing in the git repo
+enum DiffTarget {
+    /// Canonical path to the file
+    File(String),
+    /// Commit ID
+    Commit(Id),
+}
+
+/// Finds what `name` is referencing
+fn diff_what_is<'a>(name: &'a str, repo: &Repo) -> (&'a str, Option<DiffTarget>) {
+    // first try interpreting it as a file name
+    let file = Path::new(name);
+    let fname = if file.exists() { Some(file) } else { None };
+    if let Some(path) = fname {
+        // potentially sinful unwraps
+        return (
+            name,
+            Some(DiffTarget::File(
+                repo.repo_relative(path).unwrap().to_git_path().unwrap(),
+            )),
+        );
+    }
+
+    // then try finding it as a ref
+    if let Ok(rev) = rev::parse(name, repo) {
+        return (name, Some(DiffTarget::Commit(rev)));
+    }
+    (name, None)
+}
+
 /// diff two references.
-pub fn diff(ref_a: String, ref_b: String) -> Result<()> {
+pub fn diff(args::Diff { things, cached }: args::Diff) -> Result<()> {
     let repo = Repo::new().context("failed to find git repo")?;
 
-    let id_a = rev::parse(&ref_a, &repo).context("Finding A reference")?;
-    let id_b = rev::parse(&ref_b, &repo).context("Finding B reference")?;
+    let typed_things = things.iter().map(|thing| diff_what_is(thing, &repo));
 
-    let tree_a = repo
-        .open(&id_a)
-        .context("Opening tree A")?
-        .commit()
-        .with_context(|| format!("Tree A ref {} did not point to a commit", &ref_a))?
-        .tree;
-    let tree_a = repo
-        .open(&tree_a)
-        .context("Opening tree A")?
-        .tree()
-        .context("Tree A is not a tree")?;
+    let mut commits = Vec::with_capacity(2);
+    let mut files = Vec::new();
+    for (name, thing) in typed_things {
+        if thing.is_none() {
+            return Err(anyhow!("Failed to resolve {} to a file or revision", name));
+        }
+        let thing = thing.unwrap();
+        match thing {
+            DiffTarget::Commit(id) => {
+                // we can only meaningfully diff two commits
+                commits.push(id);
+                if commits.len() > 2 {
+                    return Err(anyhow!("Got too many commits"));
+                }
+                if files.len() > 0 {
+                    return Err(anyhow!("Got a file prior to commits"));
+                }
+            }
+            DiffTarget::File(relative) => {
+                files.push(relative);
+            }
+        }
+    }
 
-    let tree_b = repo
-        .open(&id_b)
-        .context("Opening tree B")?
-        .commit()
-        .with_context(|| format!("Tree B ref {} did not point to a commit", &ref_b))?
-        .tree;
-    let tree_b = repo
-        .open(&tree_b)
-        .context("Opening tree B")?
-        .tree()
-        .context("Tree B is not a tree")?;
+    // If we have no commits, we should compare working tree to HEAD
+    if commits.len() == 0 {
+        // default to looking at HEAD
+        // we don't support diffing against a nonexistent HEAD because my HEAD
+        // hurts too much for this right now
+        commits.push(rev::parse("HEAD", &repo)?);
+    }
+    debug!("diffing {:?} commits for {:?} files", &commits, &files);
+    diff_trees(&commits[0], &commits[1], "", &repo)?;
+
+    // let id_a = rev::parse(&ref_a, &repo).context("Finding A reference")?;
+    // let id_b = rev::parse(&ref_b, &repo).context("Finding B reference")?;
+
+    // let tree_a = repo
+    //     .open(&id_a)
+    //     .context("Opening tree A")?
+    //     .commit()
+    //     .with_context(|| format!("Tree A ref {} did not point to a commit", &ref_a))?
+    //     .tree;
+    // let tree_a = repo
+    //     .open(&tree_a)
+    //     .context("Opening tree A")?
+    //     .tree()
+    //     .context("Tree A is not a tree")?;
+
+    // let tree_b = repo
+    //     .open(&id_b)
+    //     .context("Opening tree B")?
+    //     .commit()
+    //     .with_context(|| format!("Tree B ref {} did not point to a commit", &ref_b))?
+    //     .tree;
+    // let tree_b = repo
+    //     .open(&tree_b)
+    //     .context("Opening tree B")?
+    //     .tree()
+    //     .context("Tree B is not a tree")?;
 
     Ok(())
 }
@@ -148,15 +216,15 @@ pub fn status() -> Result<()> {
         .iter()
         .map(|IndexEntry { ref name, meta: ie }| (name.as_str(), &ie.id));
 
-    let diffs = diff_file_lists(&mut diff_head, &mut diff_index, |a, b| a == b);
+    let diffs = diff_file_lists(&mut diff_head, &mut diff_index);
 
     let sigil = |d| match d {
         // change in index
-        Diff::Different => "~",
+        Diff::Different(_, _) => "~",
         // missing from index (deleted vs HEAD)
-        Diff::ExtraInLeft => "-",
+        Diff::ExtraInLeft(_) => "-",
         // missing from HEAD (new in index)
-        Diff::ExtraInRight => "+",
+        Diff::ExtraInRight(_) => "+",
     };
 
     println!("Changes to commit:");

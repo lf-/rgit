@@ -26,7 +26,7 @@ fn do_main(opts: args::Opts) -> Result<()> {
     match opts.subcmd {
         SubCommand::Add(a) => commands::add(a.files),
         SubCommand::Commit(c) => commands::commit(c.who, c.message),
-        //SubCommand::Diff(d) => commands::diff(d),
+        SubCommand::Diff(d) => commands::diff(d),
         SubCommand::Init => commands::init(),
         SubCommand::Status => commands::status(),
         // plumbing

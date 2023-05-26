@@ -20,7 +20,7 @@ pub enum SubCommand {
     Commit(Commit),
 
     /// 🆎 diffs blobs and commits
-    //Diff(Diff),
+    Diff(Diff),
 
     /// ✨ makes a new repo
     Init,
@@ -55,7 +55,6 @@ pub struct Add {
     pub files: Vec<String>,
 }
 
-// :( this should be pub but the macro eats it
 arg_enum! {
 pub enum OutputType {
     Raw,
@@ -84,6 +83,17 @@ pub struct Commit {
     #[clap(long, short = "m", case_insensitive = true)]
     /// Commit message
     pub message: String,
+}
+
+#[derive(Clap)]
+pub struct Diff {
+    /// List of things to compare. Currently just compares the working tree or
+    /// staging area to the given commit.
+    #[clap(index = 1)]
+    pub things: Vec<String>,
+
+    #[clap(long = "cached", visible_alias = "staged")]
+    pub cached: bool,
 }
 
 #[derive(Clap)]

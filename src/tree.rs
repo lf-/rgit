@@ -64,26 +64,29 @@ impl TreeEntry {
 
 #[derive(Debug, PartialEq, Eq)]
 /// A type to represent differences between two trees
-pub enum Diff {
+pub enum Diff<A, B>
+where
+    A: Eq,
+    B: Eq,
+{
     /// The entry has different content
-    Different,
+    Different(A, B),
     /// This name is only in the right side
-    ExtraInRight,
+    ExtraInRight(B),
     /// This name is only in the left side
-    ExtraInLeft,
+    ExtraInLeft(A),
 }
 
 /// Finds the differences between two flat, sorted file list iterators. Caller is
 /// expected to ensure they are sorted to avoid unexpected results. Takes a
 /// comparator function to compare the two Ts. This allows avoiding copying or
 /// double-iteration if the thing to be compared is inside the T.
-pub fn diff_file_lists<'a, 'b, A, B, F>(
-    left: &mut dyn Iterator<Item = (&'a str, &'b A)>,
-    right: &mut dyn Iterator<Item = (&'a str, &'b B)>,
-    comparator: F,
-) -> Vec<(&'a str, Diff)>
+pub fn diff_file_lists<'name, 'item, A>(
+    left: &mut dyn Iterator<Item = (&'name str, &'item A)>,
+    right: &mut dyn Iterator<Item = (&'name str, &'item A)>,
+) -> Vec<(&'name str, Diff<&'item A, &'item A>)>
 where
-    F: Fn(&'b A, &'b B) -> bool,
+    A: PartialEq + Eq,
 {
     let mut diffs = Vec::new();
 
@@ -99,15 +102,15 @@ where
 
             // A A
             // - B
-            (None, Some((r, _))) => {
-                diffs.push((r, Diff::ExtraInRight));
+            (None, Some((r, ri))) => {
+                diffs.push((r, Diff::ExtraInRight(ri)));
                 rnext = right.next();
             }
 
             // A A
             // B -
-            (Some((l, _)), None) => {
-                diffs.push((l, Diff::ExtraInLeft));
+            (Some((l, li)), None) => {
+                diffs.push((l, Diff::ExtraInLeft(li)));
                 lnext = left.next();
             }
 
@@ -117,7 +120,7 @@ where
                 match l.cmp(r) {
                     // A:1 A:1
                     // B:2 B:2
-                    Ordering::Equal if comparator(li, ri) => {
+                    Ordering::Equal if li == ri => {
                         lnext = left.next();
                         rnext = right.next();
                     }
@@ -125,7 +128,7 @@ where
                     // A:1 A:1
                     // B:2 B:3
                     Ordering::Equal => {
-                        diffs.push((l, Diff::Different));
+                        diffs.push((l, Diff::Different(li, ri)));
                         lnext = left.next();
                         rnext = right.next();
                     }
@@ -133,7 +136,7 @@ where
                     // A:1 A:1
                     // B:? C:?
                     Ordering::Less => {
-                        diffs.push((l, Diff::ExtraInLeft));
+                        diffs.push((l, Diff::ExtraInLeft(li)));
                         // catch up
                         lnext = left.next();
                     }
@@ -141,7 +144,7 @@ where
                     // A:1 A:1
                     // C:? B:?
                     Ordering::Greater => {
-                        diffs.push((r, Diff::ExtraInRight));
+                        diffs.push((r, Diff::ExtraInRight(ri)));
                         // catch up
                         rnext = right.next();
                     }
@@ -150,6 +153,42 @@ where
         }
     }
     diffs
+}
+
+/// Opens a commit by ID and returns its Tree object
+fn open_tree(id: &Id, repo: &Repo) -> Result<Tree> {
+    // retrieve commit info
+    let cmt = repo
+        .open(id)?
+        .commit()
+        .context("given commit ID was not a commit!")?;
+
+    // retrieve its tree
+    repo.open(&cmt.tree)?
+        .tree()
+        .context("opened tree was not a tree!")
+}
+
+/// Finds the differences between two trees. Takes Ids of both trees
+pub fn diff_trees(a: &Id, b: &Id, base_path: &str, repo: &Repo) -> Result<Vec<Diff<Id, Id>>> {
+    let ret = Vec::new();
+    let a = open_tree(a, repo)?;
+    let b = open_tree(b, repo)?;
+    let mut aiter = a.files.iter().map(|file| (file.name.as_str(), file));
+    let mut biter = b.files.iter().map(|file| (file.name.as_str(), file));
+
+    let diffs = diff_file_lists(&mut aiter, &mut biter);
+    for (fname, diff) in diffs {
+        match diff {
+            Diff::Different(l, r) => {
+                // File is different in mode or ID
+                println!("dif {:?} {:?} {:?}", fname, l, r);
+            }
+            Diff::ExtraInLeft(f) => println!("l {:?} {:?}", fname, f),
+            Diff::ExtraInRight(f) => println!("r {:?} {:?}", fname, f),
+        }
+    }
+    Ok(ret)
 }
 
 /// Makes a SubTree object out of the tree in the index
@@ -269,7 +308,6 @@ mod test {
 
     #[test]
     fn test_tree_comparison() {
-        let comparator = |a, b| a == b;
         let mut tree1 = Vec::new();
         let mut tree2 = Vec::new();
 
@@ -279,34 +317,26 @@ mod test {
         tree1.push(("a", &id1));
         tree2.push(("a", &id2));
         let identical = tree1.clone();
-        let diffs = super::diff_file_lists(
-            &mut tree1.iter().cloned(),
-            &mut identical.iter().cloned(),
-            comparator,
-        );
+        let diffs =
+            super::diff_file_lists(&mut tree1.iter().cloned(), &mut identical.iter().cloned());
 
         // identical trees should not have any diff output
         assert_eq!(diffs.len(), 0);
 
-        let diffs = super::diff_file_lists(
-            &mut tree1.iter().cloned(),
-            &mut tree2.iter().cloned(),
-            comparator,
-        );
+        let diffs = super::diff_file_lists(&mut tree1.iter().cloned(), &mut tree2.iter().cloned());
 
         // 'a' should be different
-        assert_eq!(diffs, vec![("a", Diff::Different)]);
+        assert_eq!(diffs, vec![("a", Diff::Different(&id1, &id2))]);
 
         // an extra item in left
         tree1.push(("b", &id1));
-        let diffs = super::diff_file_lists(
-            &mut tree1.iter().cloned(),
-            &mut tree2.iter().cloned(),
-            comparator,
-        );
+        let diffs = super::diff_file_lists(&mut tree1.iter().cloned(), &mut tree2.iter().cloned());
         assert_eq!(
             diffs,
-            vec![("a", Diff::Different), ("b", Diff::ExtraInLeft)]
+            vec![
+                ("a", Diff::Different(&id1, &id2)),
+                ("b", Diff::ExtraInLeft(&id1))
+            ]
         );
 
         // test fast-forward advance
@@ -316,17 +346,13 @@ mod test {
         // we only accept sorted trees
         tree1.sort_by_key(|&(name, _)| name);
         println!("tree 1: {:?}\ntree 2: {:?}", &tree1, &tree2);
-        let diffs = super::diff_file_lists(
-            &mut tree1.iter().cloned(),
-            &mut tree2.iter().cloned(),
-            comparator,
-        );
+        let diffs = super::diff_file_lists(&mut tree1.iter().cloned(), &mut tree2.iter().cloned());
         assert_eq!(
             diffs,
             vec![
-                ("a", Diff::Different),
-                ("aa", Diff::ExtraInLeft),
-                ("b", Diff::Different),
+                ("a", Diff::Different(&id1, &id2)),
+                ("aa", Diff::ExtraInLeft(&id1)),
+                ("b", Diff::Different(&id1, &id2)),
             ]
         );
     }
